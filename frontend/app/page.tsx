@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { API_ENDPOINTS } from '@/lib/api-config';
+import { SettingsButton } from '@/components/SettingsModal';
 
 interface Stock {
   symbol: string;
@@ -28,7 +30,7 @@ export default function Dashboard() {
   const fetchTopStocks = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:8000/api/stocks/top/10?timeframe=${timeframe}`);
+      const response = await fetch(API_ENDPOINTS.TOP_STOCKS(10, timeframe));
       if (!response.ok) throw new Error('Failed to fetch stocks');
       const data = await response.json();
       setStocks(data);
@@ -55,12 +57,12 @@ export default function Dashboard() {
     }
   }, [timeframe]);
 
-  // Auto-refresh every 10 seconds
+  // Auto-refresh every 30 seconds
   useEffect(() => {
     if (isAutoRefreshing) {
       intervalRef.current = setInterval(() => {
         fetchTopStocks();
-      }, 10000 * 6); // 10 seconds
+      }, 10000 * 3); 
 
       return () => {
         if (intervalRef.current) {
@@ -148,6 +150,7 @@ export default function Dashboard() {
               <a href="/portfolio" className="text-gray-600 hover:text-gray-900">
                 Portfolio
               </a>
+              <SettingsButton />
             </nav>
           </div>
         </div>
