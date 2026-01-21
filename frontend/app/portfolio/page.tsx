@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot } from 'recharts';
+import { API_ENDPOINTS } from '@/lib/api-config';
 
 interface Trade {
   id: string;
@@ -52,7 +53,8 @@ export default function PortfolioPage() {
 
   const fetchActiveBots = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/bots/active');
+      const response = await fetch(API_ENDPOINTS.ACTIVE_BOTS());
+      // const response = await fetch('http://localhost:8000/api/bots/active');
       if (response.ok) {
         const bots = await response.json();
         const botIds = bots.map((bot: any) => bot.bot_id);
@@ -75,7 +77,8 @@ export default function PortfolioPage() {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch(`http://localhost:8000/api/portfolio/${botId}`);
+      const response = await fetch(API_ENDPOINTS.PORTFOLIO(botId));
+      // const response = await fetch(`http://localhost:8000/api/portfolio/${botId}`);
       
       if (!response.ok) {
         throw new Error('Portfolio not found');
@@ -102,7 +105,8 @@ export default function PortfolioPage() {
   const fetchPriceHistory = async (symbol: string, trades: Trade[] = []) => {
     try {
       setLoadingChart(true);
-      const response = await fetch(`http://localhost:8000/api/history/${symbol}?period=1mo`);
+      const response = await fetch(API_ENDPOINTS.PRICE_HISTORY(symbol, '1mo'));
+      // const response = await fetch(`http://localhost:8000/api/history/${symbol}?period=1mo`);
       
       if (!response.ok) {
         console.error('Failed to fetch price history');
