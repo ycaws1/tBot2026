@@ -8,13 +8,20 @@ from datetime import datetime, timedelta
 import json
 from concurrent.futures import ThreadPoolExecutor
 import functools
+import os
 
 app = FastAPI(title="Stock Trading Bot API")
+
+raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+if "," in raw_origins:
+    origins = [origin.strip() for origin in raw_origins.split(",")]
+else:
+    origins = [raw_origins]
 
 # CORS middleware for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
