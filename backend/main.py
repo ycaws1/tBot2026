@@ -12,28 +12,29 @@ import functools
 import os
 import uuid
 
-# DistilRoBERTa financial sentiment analysis (lighter than FinBERT)
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
+# VADER sentiment analysis (from nltk, lightweight)
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-# Initialize DistilRoBERTa (lazy loading to speed up startup)
-sentiment_tokenizer = None
-sentiment_model = None
+# Initialize VADER (lazy loading)
+vader_analyzer = None
 
-def get_sentiment_model():
-    """Lazy load DistilRoBERTa financial sentiment model"""
-    global sentiment_tokenizer, sentiment_model
-    if sentiment_tokenizer is None:
+def get_vader():
+    """Lazy load VADER sentiment analyzer"""
+    global vader_analyzer
+    if vader_analyzer is None:
         print("=" * 50)
-        print("Loading DistilRoBERTa financial sentiment model...")
+        print("Loading VADER sentiment analyzer...")
         print("This should only happen ONCE per server start.")
         print("=" * 50)
-        model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
-        sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        sentiment_model.eval()  # Set to evaluation mode
-        print("DistilRoBERTa model loaded and cached!")
-    return sentiment_tokenizer, sentiment_model
+        try:
+            nltk.data.find('sentiment/vader_lexicon.zip')
+        except LookupError:
+            print("Downloading VADER lexicon...")
+            nltk.download('vader_lexicon', quiet=True)
+        vader_analyzer = SentimentIntensityAnalyzer()
+        print("VADER loaded and cached!")
+    return vader_analyzer
 
 # Import strategies
 from strategies import StrategyFactory
@@ -845,46 +846,33 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- DistilRoBERTa NLP analysis ---
+    # --- VADER NLP analysis ---
+    nlp_compound = 0.0
+    nlp_sentiment = "neutral"
+    positive_prob = 0.33
+    negative_prob = 0.33
+    neutral_prob = 0.34
+
     try:
-        tokenizer, model = get_sentiment_model()
+        analyzer = get_vader()
+        scores = analyzer.polarity_scores(text)
 
-        # Truncate text to max 512 tokens
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        positive_prob = scores['pos']
+        negative_prob = scores['neg']
+        neutral_prob = scores['neu']
+        nlp_compound = scores['compound']  # VADER compound score (-1 to +1)
 
-        with torch.no_grad():
-            outputs = model(**inputs)
-            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
-
-        # DistilRoBERTa outputs: [negative, neutral, positive]
-        probs = probabilities[0].tolist()
-        negative_prob = probs[0]
-        neutral_prob = probs[1]
-        positive_prob = probs[2]
-
-        # Calculate compound score (-1 to +1)
-        nlp_compound = positive_prob - negative_prob
-
-        # Classify sentiment
-        max_prob = max(positive_prob, negative_prob, neutral_prob)
-        if max_prob == positive_prob:
+        # Classify based on compound score
+        if nlp_compound >= 0.05:
             nlp_sentiment = "positive"
-        elif max_prob == negative_prob:
+        elif nlp_compound <= -0.05:
             nlp_sentiment = "negative"
         else:
             nlp_sentiment = "neutral"
-
     except Exception as e:
-        print(f"DistilRoBERTa error: {e}")
-        # Fallback values
-        nlp_compound = 0.0
-        nlp_sentiment = "neutral"
-        positive_prob = 0.33
-        negative_prob = 0.33
-        neutral_prob = 0.34
+        print(f"VADER error: {e}")
 
-    # --- Combined score (weighted average: 30% keyword, 70% NLP) ---
-    # DistilRoBERTa is more reliable for financial text
+    # --- Combined score (30% keyword, 70% VADER) ---
     combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
 
     if combined_score > 0.1:
