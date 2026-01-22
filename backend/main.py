@@ -12,28 +12,34 @@ import functools
 import os
 import uuid
 
-# DistilRoBERTa financial sentiment analysis
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
+# FastText sentiment analysis (lightweight)
+import fasttext
+import urllib.request
 
-# Initialize DistilRoBERTa (lazy loading)
-sentiment_tokenizer = None
-sentiment_model = None
+# Initialize FastText (lazy loading)
+fasttext_model = None
 
-def get_sentiment_model():
-    """Lazy load DistilRoBERTa financial sentiment model"""
-    global sentiment_tokenizer, sentiment_model
-    if sentiment_tokenizer is None:
+def get_fasttext_model():
+    """Lazy load FastText sentiment model"""
+    global fasttext_model
+    if fasttext_model is None:
         print("=" * 50)
-        print("Loading DistilRoBERTa financial sentiment model...")
+        print("Loading FastText sentiment model...")
         print("This should only happen ONCE per server start.")
         print("=" * 50)
-        model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
-        sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        sentiment_model.eval()
-        print("DistilRoBERTa model loaded and cached!")
-    return sentiment_tokenizer, sentiment_model
+        try:
+            model_path = os.path.join(os.path.dirname(__file__), "sentiment_model.bin")
+            if not os.path.exists(model_path):
+                # Download pre-trained sentiment model
+                print("Downloading FastText sentiment model...")
+                url = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/amazon_review_polarity.ftz"
+                urllib.request.urlretrieve(url, model_path)
+            fasttext_model = fasttext.load_model(model_path)
+            print("FastText model loaded and cached!")
+        except Exception as e:
+            print(f"FastText load error: {e}")
+            fasttext_model = None
+    return fasttext_model
 
 # Import strategies
 from strategies import StrategyFactory
@@ -724,7 +730,7 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- DistilRoBERTa NLP analysis ---
+    # --- FastText NLP analysis ---
     nlp_compound = 0.0
     nlp_sentiment = "neutral"
     positive_prob = 0.33
@@ -732,34 +738,39 @@ def analyze_sentiment(text: str) -> dict:
     neutral_prob = 0.34
 
     try:
-        tokenizer, model = get_sentiment_model()
+        model = get_fasttext_model()
+        if model is not None:
+            # Clean text for FastText (single line, no newlines)
+            clean_text = ' '.join(text.split())
+            if clean_text:
+                predictions = model.predict(clean_text, k=2)
+                labels, probs = predictions
 
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+                # Parse FastText output (labels like __label__1 or __label__2)
+                for label, prob in zip(labels, probs):
+                    label_clean = label.replace('__label__', '')
+                    if label_clean == '2':  # positive
+                        positive_prob = prob
+                    elif label_clean == '1':  # negative
+                        negative_prob = prob
 
-        with torch.no_grad():
-            outputs = model(**inputs)
-            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
+                neutral_prob = max(0, 1 - positive_prob - negative_prob)
+                nlp_compound = positive_prob - negative_prob
 
-        # DistilRoBERTa outputs: [negative, neutral, positive]
-        probs = probabilities[0].tolist()
-        negative_prob = probs[0]
-        neutral_prob = probs[1]
-        positive_prob = probs[2]
-
-        nlp_compound = positive_prob - negative_prob
-
-        max_prob = max(positive_prob, negative_prob, neutral_prob)
-        if max_prob == positive_prob:
-            nlp_sentiment = "positive"
-        elif max_prob == negative_prob:
-            nlp_sentiment = "negative"
-        else:
-            nlp_sentiment = "neutral"
+                if positive_prob > negative_prob:
+                    nlp_sentiment = "positive"
+                elif negative_prob > positive_prob:
+                    nlp_sentiment = "negative"
+                else:
+                    nlp_sentiment = "neutral"
     except Exception as e:
-        print(f"DistilRoBERTa error: {e}")
+        print(f"FastText error: {e}")
 
-    # --- Combined score (30% keyword, 70% NLP) ---
-    combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
+    # --- Combined score (30% keyword, 70% FastText) ---
+    if get_fasttext_model() is not None:
+        combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
+    else:
+        combined_score = keyword_score
 
     if combined_score > 0.1:
         sentiment = "positive"
