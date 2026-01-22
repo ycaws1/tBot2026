@@ -4,3 +4,4 @@ pydantic
 passlib
 yfinance
 websocket
+nltk

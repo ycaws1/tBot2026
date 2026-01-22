@@ -12,6 +12,19 @@ import functools
 import os
 import uuid
 
+# NLP sentiment analysis
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# Download VADER lexicon (only needed once)
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon', quiet=True)
+
+# Initialize VADER
+vader_analyzer = SentimentIntensityAnalyzer()
+
 # Import strategies
 from strategies import StrategyFactory
 
@@ -517,10 +530,10 @@ async def get_price_history(symbol: str, period: str = "1mo", interval: str = "1
     """Get historical price data"""
     try:
         hist = await get_ticker_history_async(symbol, period, interval)
-        
+
         if hist.empty:
             raise HTTPException(status_code=404, detail="No data found")
-        
+
         history = []
         for date, row in hist.iterrows():
             history.append({
@@ -531,10 +544,206 @@ async def get_price_history(symbol: str, period: str = "1mo", interval: str = "1
                 "close": float(row['Close']),
                 "volume": int(row['Volume'])
             })
-        
+
         return history
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Sentiment Analysis
+def analyze_sentiment(text: str) -> dict:
+    """Combined keyword-based and VADER NLP sentiment analysis"""
+    text_lower = text.lower()
+
+    # --- Keyword-based analysis ---
+    positive_words = [
+        'surge', 'soar', 'jump', 'gain', 'rise', 'climb', 'rally', 'boost',
+        'bullish', 'upbeat', 'optimistic', 'growth', 'profit', 'beat', 'exceed',
+        'strong', 'positive', 'upgrade', 'buy', 'outperform', 'record', 'high',
+        'success', 'breakthrough', 'innovation', 'expansion', 'recovery'
+    ]
+
+    negative_words = [
+        'drop', 'fall', 'decline', 'plunge', 'crash', 'sink', 'tumble', 'slide',
+        'bearish', 'pessimistic', 'loss', 'miss', 'disappoint', 'weak', 'negative',
+        'downgrade', 'sell', 'underperform', 'low', 'fail', 'cut', 'layoff',
+        'concern', 'risk', 'warning', 'lawsuit', 'investigation', 'recall'
+    ]
+
+    positive_count = sum(1 for word in positive_words if word in text_lower)
+    negative_count = sum(1 for word in negative_words if word in text_lower)
+
+    total = positive_count + negative_count
+    if total == 0:
+        keyword_score = 0.0
+        keyword_confidence = 0.0
+    else:
+        keyword_score = (positive_count - negative_count) / total
+        keyword_confidence = min(total / 5, 1.0)
+
+    # --- VADER NLP analysis ---
+    vader_scores = vader_analyzer.polarity_scores(text)
+    # compound score ranges from -1 (most negative) to +1 (most positive)
+    vader_compound = vader_scores['compound']
+
+    # Classify VADER sentiment
+    if vader_compound >= 0.05:
+        vader_sentiment = "positive"
+    elif vader_compound <= -0.05:
+        vader_sentiment = "negative"
+    else:
+        vader_sentiment = "neutral"
+
+    # --- Combined score (weighted average: 40% keyword, 60% VADER) ---
+    # VADER is more reliable so we weight it higher
+    combined_score = (0.4 * keyword_score) + (0.6 * vader_compound)
+
+    if combined_score > 0.1:
+        sentiment = "positive"
+    elif combined_score < -0.1:
+        sentiment = "negative"
+    else:
+        sentiment = "neutral"
+
+    return {
+        "sentiment": sentiment,
+        "score": round(combined_score, 2),
+        "keyword": {
+            "score": round(keyword_score, 2),
+            "confidence": round(keyword_confidence, 2)
+        },
+        "nlp": {
+            "sentiment": vader_sentiment,
+            "score": round(vader_compound, 2),
+            "positive": round(vader_scores['pos'], 2),
+            "negative": round(vader_scores['neg'], 2),
+            "neutral": round(vader_scores['neu'], 2)
+        }
+    }
+
+
+async def get_ticker_news_async(symbol: str):
+    """Fetch news for a stock using yfinance"""
+    async with fetch_semaphore:
+        def _get_news():
+            ticker = yf.Ticker(symbol)
+            return ticker.news
+        return await run_async(_get_news)
+
+
+@app.get("/api/news/{symbol}")
+async def get_stock_news(symbol: str, limit: int = 5):
+    """Get latest news for a stock with sentiment analysis"""
+    try:
+        news_items = await get_ticker_news_async(symbol)
+
+        if not news_items:
+            return {"symbol": symbol, "news": [], "overall_sentiment": "neutral"}
+
+        processed_news = []
+        sentiment_scores = []
+
+        for item in news_items[:limit]:
+            # Handle new yfinance news structure (nested under 'content')
+            content = item.get('content', {}) if isinstance(item, dict) else {}
+
+            title = content.get('title', '') or item.get('title', '')
+            summary = content.get('summary', '') or item.get('summary', '')
+
+            # Combine title and summary for better sentiment analysis
+            text_for_analysis = title
+            if summary:
+                text_for_analysis += ' ' + summary
+
+            sentiment = analyze_sentiment(text_for_analysis)
+            sentiment_scores.append(sentiment['score'])
+
+            # Extract publisher from nested structure
+            provider = content.get('provider', {})
+            publisher = provider.get('displayName', '') or item.get('publisher', 'Unknown')
+
+            # Extract link from nested structure
+            canonical_url = content.get('canonicalUrl', {})
+            link = canonical_url.get('url', '') or item.get('link', '')
+
+            # Handle date - new format uses ISO string 'pubDate', old used timestamp
+            pub_date = content.get('pubDate') or content.get('displayTime')
+            if pub_date:
+                published = pub_date  # Already ISO format
+            elif item.get('providerPublishTime'):
+                published = datetime.fromtimestamp(item.get('providerPublishTime')).isoformat()
+            else:
+                published = None
+
+            processed_news.append({
+                "title": title,
+                "publisher": publisher,
+                "link": link,
+                "published": published,
+                "sentiment": sentiment
+            })
+
+        # Calculate overall sentiment
+        if sentiment_scores:
+            avg_score = sum(sentiment_scores) / len(sentiment_scores)
+            if avg_score > 0.1:
+                overall = "positive"
+            elif avg_score < -0.1:
+                overall = "negative"
+            else:
+                overall = "neutral"
+        else:
+            overall = "neutral"
+            avg_score = 0
+
+        return {
+            "symbol": symbol,
+            "news": processed_news,
+            "overall_sentiment": overall,
+            "overall_score": round(avg_score, 2)
+        }
+    except Exception as e:
+        print(f"Error fetching news for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stocks/top/{n}/with-news")
+async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
+    """Get top stocks with news sentiment"""
+    if timeframe not in ['1m', '1h', '1d', '1w']:
+        timeframe = '1m'
+
+    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
+               "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL"]
+
+    # Fetch stock info
+    stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:n*2]]
+    stock_results = await asyncio.gather(*stock_tasks)
+
+    stocks = [stock for stock in stock_results if stock is not None]
+    stocks.sort(key=lambda x: x.potential_score, reverse=True)
+    top_stocks = stocks[:n]
+
+    # Fetch news for top stocks
+    news_tasks = [get_stock_news(stock.symbol, limit=3) for stock in top_stocks]
+    news_results = await asyncio.gather(*news_tasks, return_exceptions=True)
+
+    # Combine stock info with news
+    result = []
+    for stock, news in zip(top_stocks, news_results):
+        stock_dict = stock.dict()
+        if isinstance(news, dict):
+            stock_dict['news'] = news.get('news', [])
+            stock_dict['news_sentiment'] = news.get('overall_sentiment', 'neutral')
+            stock_dict['news_score'] = news.get('overall_score', 0)
+        else:
+            stock_dict['news'] = []
+            stock_dict['news_sentiment'] = 'neutral'
+            stock_dict['news_score'] = 0
+        result.append(stock_dict)
+
+    return result
+
 
 if __name__ == "__main__":
     import uvicorn
