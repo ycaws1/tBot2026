@@ -1,3 +1,4 @@
+// app/page.tsx
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -13,16 +14,20 @@ interface Stock {
   trend: string;
 }
 
-type Timeframe = '1h' | '1d' | '1w';
+type Timeframe = '1m' | '1h' | '1d' | '1w';
+type SortColumn = 'trend' | 'potential_score' | null;
+type SortDirection = 'asc' | 'desc';
 
 export default function Dashboard() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [timeframe, setTimeframe] = useState<Timeframe>('1d');
+  const [timeframe, setTimeframe] = useState<Timeframe>('1h');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isAutoRefreshing, setIsAutoRefreshing] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [sortColumn, setSortColumn] = useState<SortColumn>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const fetchedRef = useRef(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const clockRef = useRef<NodeJS.Timeout | null>(null);
@@ -126,10 +131,42 @@ export default function Dashboard() {
   const formatLastUpdate = () => {
     if (!lastUpdate) return 'Never';
     const diff = Math.floor((currentTime.getTime() - lastUpdate.getTime()) / 1000);
-    
+
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     return lastUpdate.toLocaleTimeString();
+  };
+
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('desc');
+    }
+  };
+
+  const getSortedStocks = () => {
+    if (!sortColumn) return stocks;
+
+    return [...stocks].sort((a, b) => {
+      let comparison = 0;
+
+      if (sortColumn === 'potential_score') {
+        comparison = a.potential_score - b.potential_score;
+      } else if (sortColumn === 'trend') {
+        const trendOrder = { 'BULLISH': 3, 'NEUTRAL': 2, 'BEARISH': 1 };
+        comparison = (trendOrder[a.trend as keyof typeof trendOrder] || 0) -
+                     (trendOrder[b.trend as keyof typeof trendOrder] || 0);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  };
+
+  const getSortIcon = (column: SortColumn) => {
+    if (sortColumn !== column) return '↕';
+    return sortDirection === 'asc' ? '↑' : '↓';
   };
 
   return (
@@ -170,6 +207,16 @@ export default function Dashboard() {
           <div className="flex gap-3 items-center flex-wrap">
             {/* Timeframe Selector */}
             <div className="flex bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+              <button
+                onClick={() => handleTimeframeChange('1m')}
+                className={`px-4 py-2 text-sm font-medium transition ${
+                  timeframe === '1m'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                1M
+              </button>
               <button
                 onClick={() => handleTimeframeChange('1h')}
                 className={`px-4 py-2 text-sm font-medium transition ${
@@ -271,11 +318,17 @@ export default function Dashboard() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Volume
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Trend
+                    <th
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('trend')}
+                    >
+                      Trend {getSortIcon('trend')}
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Potential Score
+                    <th
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('potential_score')}
+                    >
+                      Potential Score {getSortIcon('potential_score')}
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Action
@@ -283,7 +336,7 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {stocks.map((stock) => (
+                  {getSortedStocks().map((stock) => (
                     <tr key={stock.symbol} className="hover:bg-gray-50 transition">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-bold text-gray-900">

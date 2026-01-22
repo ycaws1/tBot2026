@@ -1,9 +1,11 @@
+// app/trading/page.tsx
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { API_ENDPOINTS } from '@/lib/api-config';
+import { SettingsButton } from '@/components/SettingsModal';
 
 interface TradingConfig {
   symbol: string;
@@ -193,6 +195,7 @@ function TradingContent() {
               <Link href="/" className="text-gray-600 hover:text-gray-900">Dashboard</Link>
               <Link href="/trading" className="text-blue-600 font-medium">Trading</Link>
               <Link href="/portfolio" className="text-gray-600 hover:text-gray-900">Portfolio</Link>
+              <SettingsButton />
             </nav>
           </div>
         </div>

@@ -102,8 +102,8 @@ export const API_ENDPOINTS = {
   SEARCH_STOCKS: (query: string, limit: number, timeframe: string) => 
     apiEndpoint(`/api/stocks/search/${query}?limit=${limit}&timeframe=${timeframe}`),
   STOCK_PRICE: (symbol: string) => apiEndpoint(`/api/price/${symbol}`),
-  PRICE_HISTORY: (symbol: string, period: string) => 
-    apiEndpoint(`/api/history/${symbol}?period=${period}`),
+  PRICE_HISTORY: (symbol: string, period: string, interval: string = '1d') =>
+    apiEndpoint(`/api/history/${symbol}?period=${period}&interval=${interval}`),
   BATCH_PRICES: () => apiEndpoint('/api/stocks/batch-prices'),
   
   // Bots

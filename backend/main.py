@@ -1,3 +1,4 @@
+# main.py - Fixed version with actual trading logic
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -9,6 +10,10 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import os
+import uuid
+
+# Import strategies
+from strategies import StrategyFactory
 
 app = FastAPI(title="Stock Trading Bot API")
 
@@ -18,7 +23,6 @@ if "," in raw_origins:
 else:
     origins = [raw_origins]
 
-# CORS middleware for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -29,10 +33,7 @@ app.add_middleware(
 
 # Thread pool for async yfinance operations
 executor = ThreadPoolExecutor(max_workers=10)
-
-# Semaphore to limit concurrent yfinance requests
-MAX_CONCURRENT_FETCHES = 5
-fetch_semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+fetch_semaphore = asyncio.Semaphore(5)
 
 # Models
 class StockInfo(BaseModel):
@@ -71,39 +72,30 @@ class SymbolListRequest(BaseModel):
     symbols: List[str]
     limit: Optional[int] = 10
 
-# In-memory storage (use database in production)
+# In-memory storage
 portfolios = {}
 active_bots = {}
+bot_tasks = {}  # Store running tasks
 trade_history = []
 
 # Async wrapper for yfinance operations
 async def run_async(func, *args, **kwargs):
-    """Run blocking function in thread pool"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
 
 async def get_ticker_info_async(symbol: str):
-    """Async wrapper for yfinance Ticker info with concurrency limit"""
     async with fetch_semaphore:
         def _get_info():
             ticker = yf.Ticker(symbol)
             return ticker.info
         return await run_async(_get_info)
 
-async def get_ticker_history_async(symbol: str, period: str = "1mo"):
-    """Async wrapper for yfinance history with concurrency limit"""
+async def get_ticker_history_async(symbol: str, period: str = "1mo", interval: str = "1d"):
     async with fetch_semaphore:
         def _get_history():
             ticker = yf.Ticker(symbol)
-            return ticker.history(period=period)
+            return ticker.history(period=period, interval=interval)
         return await run_async(_get_history)
-
-async def get_ticker_async(symbol: str):
-    """Get full ticker object async with concurrency limit"""
-    async with fetch_semaphore:
-        def _get_ticker():
-            return yf.Ticker(symbol)
-        return await run_async(_get_ticker)
 
 # Simulated Broker
 class SimulatedBroker:
@@ -118,7 +110,6 @@ class SimulatedBroker:
         if self.cash >= total_cost:
             self.cash -= total_cost
             if symbol in self.positions:
-                # Update average price
                 old_qty = self.positions[symbol]['quantity']
                 old_price = self.positions[symbol]['avg_price']
                 new_qty = old_qty + quantity
@@ -143,7 +134,10 @@ class SimulatedBroker:
                 'total': total_cost
             }
             self.trades.append(trade)
+            print(f"✅ EXECUTED BUY: {quantity} shares of {symbol} at ${price:.2f} (Total: ${total_cost:.2f})")
             return trade
+        else:
+            print(f"❌ INSUFFICIENT FUNDS: Need ${total_cost:.2f}, have ${self.cash:.2f}")
         return None
     
     def sell(self, symbol: str, price: float, quantity: int):
@@ -165,7 +159,10 @@ class SimulatedBroker:
                 'total': total_value
             }
             self.trades.append(trade)
+            print(f"✅ EXECUTED SELL: {quantity} shares of {symbol} at ${price:.2f} (Total: ${total_value:.2f})")
             return trade
+        else:
+            print(f"❌ CANNOT SELL: Don't have {quantity} shares of {symbol}")
         return None
     
     def get_portfolio_value(self, current_prices: Dict[str, float]):
@@ -179,72 +176,135 @@ class SimulatedBroker:
         current_value = self.get_portfolio_value(current_prices)
         return current_value - self.initial_capital
 
-# Stock Analysis
-async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') -> float:
-    """Calculate potential score based on momentum and volatility - async version"""
+# Trading Bot Task
+async def trading_bot_task(bot_id: str):
+    """Background task that monitors price and executes trades"""
+    print(f"🤖 Starting trading bot: {bot_id}")
+    
+    bot_info = active_bots[bot_id]
+    config = bot_info["config"]
+    broker = portfolios[bot_id]
+    
+    # Create strategy instance
+    strategy_config = {
+        'symbol': config.symbol,
+        'capital': config.capital,
+        'entry_threshold': config.entry_threshold,
+        'exit_threshold': config.exit_threshold,
+        'stop_loss': config.stop_loss
+    }
+    strategy = StrategyFactory.create_strategy(config.strategy, strategy_config)
+    
+    symbol = config.symbol
+    check_interval = 10  # Check every 10 seconds
+    
     try:
-        # Map timeframe to yfinance period
-        period_map = {
-            '1h': '1d',   # Need at least 1 day for hourly data
-            '1d': '5d',   # 5 days for daily analysis
-            '1w': '1mo'   # 1 month for weekly analysis
-        }
-        period = period_map.get(timeframe, '5d')
-        
-        hist = await get_ticker_history_async(symbol, period)
+        while active_bots[bot_id]["active"]:
+            try:
+                # Fetch current price
+                info = await get_ticker_info_async(symbol)
+                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                
+                if current_price == 0:
+                    print(f"⚠️ Could not get valid price for {symbol}")
+                    await asyncio.sleep(check_interval)
+                    continue
+                
+                # Fetch historical data for strategy
+                hist = await get_ticker_history_async(symbol, period="1mo")
+                
+                if hist.empty:
+                    print(f"⚠️ No historical data for {symbol}")
+                    await asyncio.sleep(check_interval)
+                    continue
+                
+                # Check if we should buy
+                if not strategy.position and strategy.should_buy(current_price, hist):
+                    quantity = strategy.calculate_quantity(current_price)
+                    trade = broker.buy(symbol, current_price, quantity)
+                    
+                    if trade:
+                        strategy.position = quantity
+                        strategy.entry_price = current_price
+                        print(f"📊 Bot {bot_id}: Position opened - {quantity} shares at ${current_price:.2f}")
+                
+                # Check if we should sell
+                elif strategy.position and strategy.should_sell(current_price, hist):
+                    if symbol in broker.positions:
+                        quantity = broker.positions[symbol]['quantity']
+                        trade = broker.sell(symbol, current_price, quantity)
+                        
+                        if trade:
+                            strategy.position = None
+                            strategy.entry_price = None
+                            print(f"📊 Bot {bot_id}: Position closed - {quantity} shares at ${current_price:.2f}")
+                
+                # Log current status
+                if strategy.position:
+                    profit_pct = ((current_price - strategy.entry_price) / strategy.entry_price) * 100 if strategy.entry_price else 0
+                    print(f"📈 Bot {bot_id}: {symbol} @ ${current_price:.2f} | Position: {strategy.position} shares | P/L: {profit_pct:+.2f}%")
+                else:
+                    print(f"💰 Bot {bot_id}: {symbol} @ ${current_price:.2f} | No position | Cash: ${broker.cash:.2f}")
+                
+            except Exception as e:
+                print(f"❌ Error in trading loop for {bot_id}: {e}")
+            
+            await asyncio.sleep(check_interval)
+    
+    except asyncio.CancelledError:
+        print(f"🛑 Trading bot {bot_id} cancelled")
+    finally:
+        print(f"🏁 Trading bot {bot_id} stopped")
+
+# Stock Analysis Functions
+async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') -> float:
+    try:
+        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
+        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
+        period = period_map.get(timeframe, '1mo')
+        interval = interval_map.get(timeframe, '1d')
+
+        hist = await get_ticker_history_async(symbol, period, interval)
         if len(hist) < 5:
             return 0.0
-        
-        # For hourly timeframe, use more recent data
-        if timeframe == '1h' and len(hist) > 7:
-            hist = hist.iloc[-7:]  # Last 7 hours
+
+        if timeframe == '1m' and len(hist) > 60:
+            hist = hist.iloc[-60:]
+        elif timeframe == '1h' and len(hist) > 24:
+            hist = hist.iloc[-24:]
         elif timeframe == '1d' and len(hist) > 5:
-            hist = hist.iloc[-5:]  # Last 5 days
+            hist = hist.iloc[-5:]
         
-        # Momentum score (recent price trend)
         momentum = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
-        
-        # Volatility score
         volatility = hist['Close'].std() / hist['Close'].mean()
-        
-        # Volume trend
         vol_trend = (hist['Volume'].iloc[-3:].mean() / hist['Volume'].mean()) - 1 if len(hist) >= 3 else 0
         
-        # Composite score (normalized to 0-100)
         score = max(0, min(100, 50 + (momentum * 2) + (vol_trend * 10) - (volatility * 20)))
         return round(score, 2)
     except:
         return 0.0
 
 async def get_trend_async(symbol: str, timeframe: str = '1d') -> str:
-    """Determine price trend - async version"""
     try:
-        # Map timeframe to analysis period
-        period_map = {
-            '1h': '1d',
-            '1d': '5d',
-            '1w': '1mo'
-        }
-        period = period_map.get(timeframe, '5d')
-        
-        hist = await get_ticker_history_async(symbol, period)
+        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
+        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
+        period = period_map.get(timeframe, '1mo')
+        interval = interval_map.get(timeframe, '1d')
+
+        hist = await get_ticker_history_async(symbol, period, interval)
         if len(hist) < 2:
             return "NEUTRAL"
-        
-        # Adjust lookback based on timeframe
-        if timeframe == '1h' and len(hist) > 6:
-            hist = hist.iloc[-6:]  # Last 6 hours
+
+        if timeframe == '1m' and len(hist) > 30:
+            hist = hist.iloc[-30:]
+        elif timeframe == '1h' and len(hist) > 12:
+            hist = hist.iloc[-12:]
         elif timeframe == '1d' and len(hist) > 5:
-            hist = hist.iloc[-5:]  # Last 5 days
-        
+            hist = hist.iloc[-5:]
+
         change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
-        
-        # Adjust thresholds based on timeframe
-        threshold_map = {
-            '1h': 0.5,   # Smaller moves in hourly
-            '1d': 1.0,   # Standard for daily
-            '1w': 2.0    # Larger moves weekly
-        }
+
+        threshold_map = {'1m': 0.2, '1h': 0.5, '1d': 1.0, '1w': 2.0}
         threshold = threshold_map.get(timeframe, 1.0)
         
         if change > threshold:
@@ -252,35 +312,26 @@ async def get_trend_async(symbol: str, timeframe: str = '1d') -> str:
         elif change < -threshold:
             return "BEARISH"
         return "NEUTRAL"
-    except:
+    except Exception as e:
+        print(f"Error in get_trend_async for {symbol}: {e}")
         return "NEUTRAL"
 
-async def fetch_stock_info(symbol: str, timeframe: str = '1d') -> Optional[StockInfo]:
-    """Fetch stock info for a single symbol - async"""
+async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[StockInfo]:
     try:
         info = await get_ticker_info_async(symbol)
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+
+        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
+        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
+        period = period_map.get(timeframe, '7d')
+        interval = interval_map.get(timeframe, '1d')
+        hist = await get_ticker_history_async(symbol, period, interval)
         
-        # Get historical data for change calculation based on timeframe
-        period_map = {
-            '1h': '1d',
-            '1d': '5d',
-            '1w': '1mo'
-        }
-        period = period_map.get(timeframe, '5d')
-        hist = await get_ticker_history_async(symbol, period)
-        
-        # Calculate change based on timeframe
         if not hist.empty:
             if timeframe == '1h' and len(hist) > 1:
-                # Use last hour's change (approximate with recent data)
                 reference_price = hist['Close'].iloc[-2] if len(hist) > 1 else hist['Close'].iloc[0]
-            elif timeframe == '1d':
-                reference_price = hist['Close'].iloc[0]
-            elif timeframe == '1w':
-                reference_price = hist['Close'].iloc[0]
             else:
-                reference_price = info.get('previousClose', current_price)
+                reference_price = hist['Close'].iloc[0]
             
             change = ((current_price - reference_price) / reference_price * 100) if reference_price else 0
         else:
@@ -302,7 +353,7 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1d') -> Optional[Stock
             trend=trend
         )
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print(f"Error fetching {symbol} for timeframe {timeframe}: {e}")
         return None
 
 # API Endpoints
@@ -310,26 +361,21 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1d') -> Optional[Stock
 def read_root():
     return {
         "message": "Stock Trading Bot API", 
-        "version": "2.0 - Async Enabled",
-        "max_concurrent_fetches": MAX_CONCURRENT_FETCHES
+        "version": "3.0 - With Active Trading",
+        "active_bots": len([b for b in active_bots.values() if b["active"]])
     }
 
 @app.get("/api/stocks/top/{n}")
 async def get_top_stocks(n: int = 10, timeframe: str = '1d'):
-    """Fetch top N potential stocks from default watchlist with timeframe"""
-    # Validate timeframe
-    if timeframe not in ['1h', '1d', '1w']:
-        timeframe = '1d'
+    if timeframe not in ['1m', '1h', '1d', '1w']:
+        timeframe = '1m'
     
-    # Default popular stocks
     symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
                "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL"]
     
-    # Fetch all stocks concurrently with timeframe
     tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:n*2]]
     results = await asyncio.gather(*tasks)
     
-    # Filter out None results and sort by potential score
     stocks = [stock for stock in results if stock is not None]
     stocks.sort(key=lambda x: x.potential_score, reverse=True)
     
@@ -337,81 +383,46 @@ async def get_top_stocks(n: int = 10, timeframe: str = '1d'):
 
 @app.post("/api/stocks/analyze")
 async def analyze_custom_stocks(request: SymbolListRequest, timeframe: str = '1d'):
-    """Analyze custom list of stock symbols with timeframe"""
-    # Validate timeframe
-    if timeframe not in ['1h', '1d', '1w']:
+    if timeframe not in ['1m', '1h', '1d', '1w']:
         timeframe = '1d'
     
     symbols = [s.upper().strip() for s in request.symbols]
     limit = request.limit or len(symbols)
     
-    # Fetch all stocks concurrently with timeframe
     tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols]
     results = await asyncio.gather(*tasks)
     
-    # Filter out None results and sort by potential score
     stocks = [stock for stock in results if stock is not None]
     stocks.sort(key=lambda x: x.potential_score, reverse=True)
     
     return stocks[:limit]
 
-@app.get("/api/stocks/search/{query}")
-async def search_stocks(query: str, limit: int = 10, timeframe: str = '1d'):
-    """Search for stocks by symbol or name with timeframe"""
-    # Validate timeframe
-    if timeframe not in ['1h', '1d', '1w']:
-        timeframe = '1d'
-    
-    # For a production app, you'd want to use a proper stock search API
-    # This is a simple implementation using common symbols
-    query = query.upper().strip()
-    
-    # Common stock symbols categorized
-    all_symbols = {
-        "tech": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "NFLX", "AMD", "INTC"],
-        "finance": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB"],
-        "retail": ["WMT", "COST", "TGT", "HD", "LOW", "NKE", "SBUX", "MCD", "CMG", "DPZ"],
-        "healthcare": ["JNJ", "UNH", "PFE", "ABBV", "TMO", "ABT", "MRK", "CVS", "LLY", "AMGN"],
-        "energy": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL"]
-    }
-    
-    # Flatten all symbols
-    all_stock_list = []
-    for category_symbols in all_symbols.values():
-        all_stock_list.extend(category_symbols)
-    
-    # Filter symbols that match the query
-    matching_symbols = [s for s in all_stock_list if query in s]
-    
-    if not matching_symbols:
-        return []
-    
-    # Fetch info for matching symbols with timeframe
-    tasks = [fetch_stock_info(symbol, timeframe) for symbol in matching_symbols[:limit]]
-    results = await asyncio.gather(*tasks)
-    
-    return [stock for stock in results if stock is not None]
-
 @app.post("/api/bot/start")
 async def start_trading_bot(config: TradingConfig):
     """Start trading bot with specified configuration"""
-    bot_id = f"bot_{config.symbol}_{datetime.now().timestamp()}"
+    bot_id = f"bot_{config.symbol}_{uuid.uuid4().hex[:8]}"
     
-    # Validate symbol exists
+    # Validate symbol
     try:
         await get_ticker_info_async(config.symbol)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid symbol: {config.symbol}")
     
-    # Initialize broker if not exists
-    if bot_id not in portfolios:
-        portfolios[bot_id] = SimulatedBroker(config.capital)
+    # Initialize broker
+    portfolios[bot_id] = SimulatedBroker(config.capital)
     
+    # Store bot info
     active_bots[bot_id] = {
         "config": config,
         "active": True,
         "created_at": datetime.now()
     }
+    
+    # Start the trading task
+    task = asyncio.create_task(trading_bot_task(bot_id))
+    bot_tasks[bot_id] = task
+    
+    print(f"✨ Started new trading bot: {bot_id} for {config.symbol}")
     
     return {"bot_id": bot_id, "status": "started", "config": config}
 
@@ -420,6 +431,20 @@ async def stop_trading_bot(bot_id: str):
     """Stop trading bot"""
     if bot_id in active_bots:
         active_bots[bot_id]["active"] = False
+        
+        # Cancel the task
+        if bot_id in bot_tasks:
+            bot_tasks[bot_id].cancel()
+            try:
+                await bot_tasks[bot_id]
+            except asyncio.CancelledError:
+                pass
+            del bot_tasks[bot_id]
+        
+        # Remove from active_bots to prevent it from appearing in active list
+        del active_bots[bot_id]
+        
+        print(f"🛑 Stopped trading bot: {bot_id}")
         return {"bot_id": bot_id, "status": "stopped"}
     raise HTTPException(status_code=404, detail="Bot not found")
 
@@ -453,7 +478,7 @@ async def get_portfolio(bot_id: str):
     
     broker = portfolios[bot_id]
     
-    # Get current prices for positions concurrently
+    # Get current prices
     current_prices = {}
     if broker.positions:
         symbols = list(broker.positions.keys())
@@ -488,15 +513,14 @@ async def get_stock_price(symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history/{symbol}")
-async def get_price_history(symbol: str, period: str = "1mo"):
-    """Get historical price data for a symbol"""
+async def get_price_history(symbol: str, period: str = "1mo", interval: str = "1d"):
+    """Get historical price data"""
     try:
-        hist = await get_ticker_history_async(symbol, period)
+        hist = await get_ticker_history_async(symbol, period, interval)
         
         if hist.empty:
-            raise HTTPException(status_code=404, detail="No data found for symbol")
+            raise HTTPException(status_code=404, detail="No data found")
         
-        # Convert to list of dictionaries
         history = []
         for date, row in hist.iterrows():
             history.append({
@@ -511,82 +535,6 @@ async def get_price_history(symbol: str, period: str = "1mo"):
         return history
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/stocks/batch-prices")
-async def get_batch_prices(symbols: List[str]):
-    """Get current prices for multiple symbols at once"""
-    async def get_price(symbol: str):
-        try:
-            info = await get_ticker_info_async(symbol)
-            return {
-                "symbol": symbol,
-                "price": info.get('currentPrice', info.get('regularMarketPrice', 0)),
-                "success": True
-            }
-        except:
-            return {"symbol": symbol, "price": 0, "success": False}
-    
-    tasks = [get_price(symbol.upper()) for symbol in symbols]
-    results = await asyncio.gather(*tasks)
-    return results
-
-# WebSocket for real-time updates
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except:
-                pass
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/prices")
-async def websocket_prices(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            # Collect all active bot symbols
-            active_symbols = []
-            bot_symbol_map = {}
-            
-            for bot_id, bot_info in active_bots.items():
-                if bot_info["active"]:
-                    symbol = bot_info["config"].symbol
-                    active_symbols.append(symbol)
-                    bot_symbol_map[symbol] = bot_id
-            
-            # Fetch all prices concurrently
-            if active_symbols:
-                tasks = [get_ticker_info_async(symbol) for symbol in active_symbols]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                for symbol, result in zip(active_symbols, results):
-                    if isinstance(result, dict):
-                        price = result.get('currentPrice', 0)
-                        bot_id = bot_symbol_map[symbol]
-                        
-                        await manager.broadcast({
-                            "type": "price_update",
-                            "bot_id": bot_id,
-                            "symbol": symbol,
-                            "price": price,
-                            "timestamp": datetime.now().isoformat()
-                        })
-            
-            await asyncio.sleep(5)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn

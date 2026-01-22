@@ -1,7 +1,10 @@
+// app/portfolio/page.tsx
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot } from 'recharts';
 import { API_ENDPOINTS } from '@/lib/api-config';
+import { SettingsButton } from '@/components/SettingsModal';
+
 
 interface Trade {
   id: string;
@@ -26,6 +29,8 @@ interface Portfolio {
   profit_loss: number;
 }
 
+type ChartTimeframe = '1m' | '1h' | '1d' | '1w';
+
 export default function PortfolioPage() {
   const [botId, setBotId] = useState('');
   const [availableBots, setAvailableBots] = useState<string[]>([]);
@@ -36,6 +41,11 @@ export default function PortfolioPage() {
   const [loadingChart, setLoadingChart] = useState(false);
   const [chartSymbol, setChartSymbol] = useState('');
   const [showChartInput, setShowChartInput] = useState(false);
+  const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('1h');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshCountdown, setRefreshCountdown] = useState(30);
+  const chartRefreshInterval = useRef<NodeJS.Timeout | null>(null);
+  const countdownInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const savedBots = sessionStorage.getItem('activeBots');
@@ -51,10 +61,50 @@ export default function PortfolioPage() {
     fetchActiveBots();
   }, []);
 
+  // Auto-refresh chart every 30 seconds with countdown
+  useEffect(() => {
+    if (autoRefresh && chartSymbol && portfolio) {
+      setRefreshCountdown(30);
+
+      // Countdown timer - updates every second
+      countdownInterval.current = setInterval(() => {
+        setRefreshCountdown(prev => {
+          if (prev <= 1) {
+            return 30; // Reset after reaching 0
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Actual refresh timer
+      chartRefreshInterval.current = setInterval(() => {
+        console.log('Auto-refreshing chart...');
+        fetchPriceHistory(chartSymbol, portfolio.trades, chartTimeframe);
+        setRefreshCountdown(30); // Reset countdown after refresh
+      }, 30000); // 30 seconds
+
+      return () => {
+        if (chartRefreshInterval.current) {
+          clearInterval(chartRefreshInterval.current);
+        }
+        if (countdownInterval.current) {
+          clearInterval(countdownInterval.current);
+        }
+      };
+    } else {
+      if (chartRefreshInterval.current) {
+        clearInterval(chartRefreshInterval.current);
+      }
+      if (countdownInterval.current) {
+        clearInterval(countdownInterval.current);
+      }
+      setRefreshCountdown(30);
+    }
+  }, [autoRefresh, chartSymbol, portfolio, chartTimeframe]);
+
   const fetchActiveBots = async () => {
     try {
       const response = await fetch(API_ENDPOINTS.ACTIVE_BOTS());
-      // const response = await fetch('http://localhost:8000/api/bots/active');
       if (response.ok) {
         const bots = await response.json();
         const botIds = bots.map((bot: any) => bot.bot_id);
@@ -78,7 +128,6 @@ export default function PortfolioPage() {
       setLoading(true);
       setError(null);
       const response = await fetch(API_ENDPOINTS.PORTFOLIO(botId));
-      // const response = await fetch(`http://localhost:8000/api/portfolio/${botId}`);
       
       if (!response.ok) {
         throw new Error('Portfolio not found');
@@ -90,7 +139,7 @@ export default function PortfolioPage() {
       if (data.trades && data.trades.length > 0) {
         const symbol = data.trades[0].symbol;
         setChartSymbol(symbol);
-        await fetchPriceHistory(symbol, data.trades);
+        await fetchPriceHistory(symbol, data.trades, chartTimeframe);
       } else {
         setShowChartInput(true);
       }
@@ -102,35 +151,128 @@ export default function PortfolioPage() {
     }
   };
 
-  const fetchPriceHistory = async (symbol: string, trades: Trade[] = []) => {
+  const getTimeframeConfig = (timeframe: ChartTimeframe) => {
+    const configs = {
+      '1m': {
+        period: '7d',
+        interval: '1m',
+        label: '1M',
+        dataPoints: 'minute-level'
+      },
+      '1h': {
+        period: '5d',
+        interval: '1h',
+        label: '1H',
+        dataPoints: 'hourly'
+      },
+      '1d': {
+        period: '1mo',
+        interval: '1d',
+        label: '1D',
+        dataPoints: 'daily'
+      },
+      '1w': {
+        period: '3mo',
+        interval: '1d',
+        label: '1W',
+        dataPoints: 'daily'
+      }
+    };
+    return configs[timeframe];
+  };
+
+  const fetchPriceHistory = async (symbol: string, trades: Trade[] = [], timeframe: ChartTimeframe = '1h') => {
     try {
       setLoadingChart(true);
-      const response = await fetch(API_ENDPOINTS.PRICE_HISTORY(symbol, '1mo'));
-      // const response = await fetch(`http://localhost:8000/api/history/${symbol}?period=1mo`);
-      
+      const config = getTimeframeConfig(timeframe);
+
+      console.log(`Fetching price history for ${symbol}: ${config.period} with ${config.interval} interval`);
+      const response = await fetch(API_ENDPOINTS.PRICE_HISTORY(symbol, config.period, config.interval));
+
       if (!response.ok) {
         console.error('Failed to fetch price history');
         return;
       }
 
       const data = await response.json();
-      
-      const chartData = data.map((item: any) => {
-        const date = new Date(item.date).getTime();
+      console.log(`Received ${data.length} data points for ${symbol}`);
+
+      if (data.length === 0) {
+        console.warn('No data points received');
+        setPriceHistory([]);
+        return;
+      }
+
+      // Debug: log timestamps
+      if (data.length > 0 && trades.length > 0) {
+        console.log('Price data range:', data[0].date, 'to', data[data.length - 1].date);
+        console.log('Trades:', trades.map(t => ({ action: t.action, timestamp: t.timestamp })));
+      }
+
+      // Helper to check if trade matches a data point
+      const tradeMatchesDataPoint = (trade: Trade, itemDate: Date, timeframe: ChartTimeframe): boolean => {
+        const tradeDate = new Date(trade.timestamp);
+
+        if (timeframe === '1d' || timeframe === '1w') {
+          // Match by same calendar day
+          return tradeDate.getFullYear() === itemDate.getFullYear() &&
+                 tradeDate.getMonth() === itemDate.getMonth() &&
+                 tradeDate.getDate() === itemDate.getDate();
+        } else if (timeframe === '1h') {
+          // Match by same day AND same hour
+          return tradeDate.getFullYear() === itemDate.getFullYear() &&
+                 tradeDate.getMonth() === itemDate.getMonth() &&
+                 tradeDate.getDate() === itemDate.getDate() &&
+                 tradeDate.getHours() === itemDate.getHours();
+        } else {
+          // 1m: match within 2 minutes
+          const timeDiff = Math.abs(tradeDate.getTime() - itemDate.getTime());
+          return timeDiff < 2 * 60 * 1000;
+        }
+      };
+
+      // Find the closest data point index for a trade
+      const findClosestDataPointIndex = (trade: Trade): number => {
+        const tradeTime = new Date(trade.timestamp).getTime();
+        let closestIdx = data.length - 1;
+        let closestDiff = Infinity;
+
+        for (let i = 0; i < data.length; i++) {
+          const dataTime = new Date(data[i].date).getTime();
+          const diff = Math.abs(tradeTime - dataTime);
+          if (diff < closestDiff) {
+            closestDiff = diff;
+            closestIdx = i;
+          }
+        }
+        return closestIdx;
+      };
+
+      // Track which trades have been matched
+      const matchedTradeIds = new Set<string>();
+
+      const chartData = data.map((item: any, idx: number) => {
+        const itemDate = new Date(item.date);
         const dataPoint: any = {
-          date: new Date(item.date).toLocaleDateString(),
-          timestamp: date,
+          date: timeframe === '1m'
+            ? itemDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : timeframe === '1h'
+            ? itemDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' })
+            : itemDate.toLocaleDateString(),
+          fullDate: itemDate.toLocaleString(),
+          timestamp: itemDate.getTime(),
           price: item.close,
         };
 
-        const tradesOnDate = trades.filter(trade => {
-          const tradeDate = new Date(trade.timestamp).setHours(0, 0, 0, 0);
-          const itemDate = new Date(item.date).setHours(0, 0, 0, 0);
-          return Math.abs(tradeDate - itemDate) < 86400000;
+        // Match trades to this data point
+        const tradesInWindow = trades.filter(trade => {
+          if (matchedTradeIds.has(trade.id)) return false;
+          return tradeMatchesDataPoint(trade, itemDate, timeframe);
         });
 
-        if (tradesOnDate.length > 0) {
-          tradesOnDate.forEach(trade => {
+        if (tradesInWindow.length > 0) {
+          tradesInWindow.forEach(trade => {
+            matchedTradeIds.add(trade.id);
             if (trade.action === 'BUY') {
               dataPoint.buyPrice = trade.price;
               dataPoint.buyQuantity = trade.quantity;
@@ -144,6 +286,24 @@ export default function PortfolioPage() {
         return dataPoint;
       });
 
+      // Handle unmatched trades - assign them to the closest data point
+      const unmatchedTrades = trades.filter(t => !matchedTradeIds.has(t.id));
+      if (unmatchedTrades.length > 0) {
+        console.log('Unmatched trades (will assign to closest point):', unmatchedTrades.map(t => t.timestamp));
+        unmatchedTrades.forEach(trade => {
+          const closestIdx = findClosestDataPointIndex(trade);
+          console.log(`Assigning trade ${trade.id} to data point ${closestIdx} (${data[closestIdx].date})`);
+          if (trade.action === 'BUY') {
+            chartData[closestIdx].buyPrice = trade.price;
+            chartData[closestIdx].buyQuantity = trade.quantity;
+          } else {
+            chartData[closestIdx].sellPrice = trade.price;
+            chartData[closestIdx].sellQuantity = trade.quantity;
+          }
+        });
+      }
+
+      console.log(`Processed ${chartData.length} chart data points`);
       setPriceHistory(chartData);
     } catch (err) {
       console.error('Error fetching price history:', err);
@@ -157,7 +317,14 @@ export default function PortfolioPage() {
       alert('Please enter a stock symbol');
       return;
     }
-    await fetchPriceHistory(chartSymbol.toUpperCase(), portfolio?.trades || []);
+    await fetchPriceHistory(chartSymbol.toUpperCase(), portfolio?.trades || [], chartTimeframe);
+  };
+
+  const handleTimeframeChange = (newTimeframe: ChartTimeframe) => {
+    setChartTimeframe(newTimeframe);
+    if (chartSymbol) {
+      fetchPriceHistory(chartSymbol, portfolio?.trades || [], newTimeframe);
+    }
   };
 
   const formatCurrency = (value: number) => {
@@ -176,17 +343,17 @@ export default function PortfolioPage() {
       const data = payload[0].payload;
       return (
         <div className="bg-white p-3 border border-gray-300 rounded shadow-lg">
-          <p className="text-sm font-semibold">{data.date}</p>
-          <p className="text-sm text-gray-700">
+          <p className="text-xs font-semibold text-gray-600">{data.fullDate || data.date}</p>
+          <p className="text-sm text-gray-700 font-medium mt-1">
             Price: {formatCurrency(data.price)}
           </p>
           {data.buyPrice && (
-            <p className="text-sm text-green-600 font-medium">
+            <p className="text-sm text-green-600 font-medium mt-1">
               🟢 BUY: {data.buyQuantity} @ {formatCurrency(data.buyPrice)}
             </p>
           )}
           {data.sellPrice && (
-            <p className="text-sm text-red-600 font-medium">
+            <p className="text-sm text-red-600 font-medium mt-1">
               🔴 SELL: {data.sellQuantity} @ {formatCurrency(data.sellPrice)}
             </p>
           )}
@@ -206,6 +373,7 @@ export default function PortfolioPage() {
               <a href="/" className="text-gray-600 hover:text-gray-900">Dashboard</a>
               <a href="/trading" className="text-gray-600 hover:text-gray-900">Trading</a>
               <a href="/portfolio" className="text-blue-600 font-medium">Portfolio</a>
+              <SettingsButton />
             </nav>
           </div>
         </div>
@@ -286,86 +454,139 @@ export default function PortfolioPage() {
 
             {(priceHistory.length > 0 || showChartInput) && (
               <div className="bg-white shadow-lg rounded-lg p-6 mb-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold text-gray-800">Price History & Trade Activity</h3>
-                  {showChartInput && (
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={chartSymbol}
-                        onChange={(e) => setChartSymbol(e.target.value.toUpperCase())}
-                        placeholder="Enter symbol (e.g., AAPL)"
-                        className="px-3 py-1 border-2 border-gray-400 rounded text-sm text-gray-900 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                        onKeyPress={(e) => e.key === 'Enter' && loadChartForSymbol()}
-                      />
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-lg font-semibold text-gray-800">Price History & Trade Activity</h3>
+                    {priceHistory.length > 0 && (
+                      <span className="text-xs text-gray-500">
+                        ({priceHistory.length} data points)
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2 items-center flex-wrap">
+                    {/* Auto-refresh Toggle with Countdown */}
+                    <div className="flex items-center gap-1">
                       <button
-                        onClick={loadChartForSymbol}
-                        disabled={loadingChart}
-                        className="bg-blue-600 text-white px-4 py-1 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
+                        onClick={() => setAutoRefresh(!autoRefresh)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                          autoRefresh
+                            ? 'bg-green-600 text-white'
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`}
+                        title={autoRefresh ? 'Auto-refresh ON (every 30s)' : 'Auto-refresh OFF'}
                       >
-                        {loadingChart ? 'Loading...' : 'Load Chart'}
+                        {autoRefresh ? '⚡ Auto-refresh' : '⏸ Paused'}
                       </button>
+                      {autoRefresh && chartSymbol && (
+                        <span className="text-xs text-gray-500 font-mono min-w-[32px]">
+                          {refreshCountdown}s
+                        </span>
+                      )}
                     </div>
-                  )}
+                    
+                    {/* Timeframe Selector */}
+                    <div className="flex bg-gray-100 rounded-lg overflow-hidden">
+                      {(['1m', '1h', '1d', '1w'] as ChartTimeframe[]).map((tf) => (
+                        <button
+                          key={tf}
+                          onClick={() => handleTimeframeChange(tf)}
+                          className={`px-3 py-1.5 text-xs font-medium transition ${
+                            chartTimeframe === tf
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          {getTimeframeConfig(tf).label}
+                        </button>
+                      ))}
+                    </div>
+                    
+                    {showChartInput && (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={chartSymbol}
+                          onChange={(e) => setChartSymbol(e.target.value.toUpperCase())}
+                          placeholder="Enter symbol (e.g., AAPL)"
+                          className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-900 bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+                          onKeyPress={(e) => e.key === 'Enter' && loadChartForSymbol()}
+                        />
+                        <button
+                          onClick={loadChartForSymbol}
+                          disabled={loadingChart}
+                          className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
+                        >
+                          {loadingChart ? 'Loading...' : 'Load'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {loadingChart ? (
                   <div className="flex justify-center items-center h-80">
                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                   </div>
                 ) : priceHistory.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={400}>
-                    <LineChart data={priceHistory}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis 
-                        dataKey="date" 
-                        tick={{ fontSize: 12 }}
-                        angle={-45}
-                        textAnchor="end"
-                        height={80}
-                      />
-                      <YAxis 
-                        tick={{ fontSize: 12 }}
-                        domain={['auto', 'auto']}
-                        tickFormatter={(value) => `${value.toFixed(2)}`}
-                      />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend />
-                      <Line 
-                        type="monotone" 
-                        dataKey="price" 
-                        stroke="#3B82F6" 
-                        strokeWidth={2}
-                        dot={false}
-                        name="Stock Price"
-                      />
-                      {priceHistory.map((entry, index) => 
-                        entry.buyPrice ? (
-                          <ReferenceDot
-                            key={`buy-${index}`}
-                            x={entry.date}
-                            y={entry.buyPrice}
-                            r={8}
-                            fill="#10B981"
-                            stroke="#fff"
-                            strokeWidth={2}
-                          />
-                        ) : null
-                      )}
-                      {priceHistory.map((entry, index) => 
-                        entry.sellPrice ? (
-                          <ReferenceDot
-                            key={`sell-${index}`}
-                            x={entry.date}
-                            y={entry.sellPrice}
-                            r={8}
-                            fill="#EF4444"
-                            stroke="#fff"
-                            strokeWidth={2}
-                          />
-                        ) : null
-                      )}
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <>
+                    <ResponsiveContainer width="100%" height={400}>
+                      <LineChart data={priceHistory}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis 
+                          dataKey="date" 
+                          tick={{ fontSize: 11 }}
+                          angle={-45}
+                          textAnchor="end"
+                          height={100}
+                        />
+                        <YAxis 
+                          tick={{ fontSize: 12 }}
+                          domain={['auto', 'auto']}
+                          tickFormatter={(value) => `${value.toFixed(2)}`}
+                        />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend />
+                        <Line 
+                          type="monotone" 
+                          dataKey="price" 
+                          stroke="#3B82F6" 
+                          strokeWidth={2}
+                          dot={false}
+                          name="Stock Price"
+                        />
+                        {priceHistory.map((entry, index) => 
+                          entry.buyPrice ? (
+                            <ReferenceDot
+                              key={`buy-${index}`}
+                              x={entry.date}
+                              y={entry.buyPrice}
+                              r={8}
+                              fill="#10B981"
+                              stroke="#fff"
+                              strokeWidth={2}
+                            />
+                          ) : null
+                        )}
+                        {priceHistory.map((entry, index) => 
+                          entry.sellPrice ? (
+                            <ReferenceDot
+                              key={`sell-${index}`}
+                              x={entry.date}
+                              y={entry.sellPrice}
+                              r={8}
+                              fill="#EF4444"
+                              stroke="#fff"
+                              strokeWidth={2}
+                            />
+                          ) : null
+                        )}
+                      </LineChart>
+                    </ResponsiveContainer>
+                    {chartTimeframe === '1m' && (
+                      <div className="mt-2 text-xs text-gray-500 text-center">
+                        Note: 1-minute data only available for last 7 days
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="flex justify-center items-center h-80 text-gray-500">
                     <p>Enter a stock symbol above to view price history</p>
