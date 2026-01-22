@@ -626,7 +626,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex justify-between items-center">
             <h1 className="text-3xl font-bold text-gray-900">
               Stock Discovery & Analysis
@@ -641,7 +641,7 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h2 className="text-2xl font-semibold text-gray-800">
@@ -842,55 +842,14 @@ export default function Dashboard() {
                             </span>
                             {/* Score breakdown tooltip */}
                             {stock.score_breakdown && (
-                              <div className="absolute top-full left-0 mt-2 hidden group-hover:block z-50 w-48 bg-gray-900 text-white text-xs rounded-lg p-3 shadow-lg">
-                                <div className="font-semibold mb-2">Day Trading Score</div>
-                                <div className="space-y-1">
-                                  <div className="flex justify-between">
-                                    <span>Momentum</span>
-                                    <span className="font-medium">{stock.score_breakdown.momentum}/25</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-blue-400 rounded" style={{ width: `${(stock.score_breakdown.momentum / 25) * 100}%` }} />
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Volatility</span>
-                                    <span className="font-medium">{stock.score_breakdown.volatility}/20</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-purple-400 rounded" style={{ width: `${(stock.score_breakdown.volatility / 20) * 100}%` }} />
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Volume</span>
-                                    <span className="font-medium">{stock.score_breakdown.volume}/20</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-green-400 rounded" style={{ width: `${(stock.score_breakdown.volume / 20) * 100}%` }} />
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Technical</span>
-                                    <span className="font-medium">{stock.score_breakdown.technical}/15</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-yellow-400 rounded" style={{ width: `${(stock.score_breakdown.technical / 15) * 100}%` }} />
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Fundamentals</span>
-                                    <span className="font-medium">{stock.score_breakdown.fundamentals}/10</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-orange-400 rounded" style={{ width: `${(stock.score_breakdown.fundamentals / 10) * 100}%` }} />
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Sentiment</span>
-                                    <span className="font-medium">{stock.score_breakdown.sentiment}/10</span>
-                                  </div>
-                                  <div className="w-full h-1 bg-gray-700 rounded">
-                                    <div className="h-full bg-pink-400 rounded" style={{ width: `${(stock.score_breakdown.sentiment / 10) * 100}%` }} />
-                                  </div>
-                                </div>
-                                <div className="mt-2 pt-2 border-t border-gray-700 flex justify-between font-semibold">
-                                  <span>Total</span>
-                                  <span>{stock.score_breakdown.total}/100</span>
+                              <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-[100] bg-gray-900 text-white text-xs rounded-lg p-2 shadow-lg">
+                                <div className="flex gap-2">
+                                  <span className="text-blue-400">Mom:{stock.score_breakdown.momentum}</span>
+                                  <span className="text-purple-400">Vol:{stock.score_breakdown.volatility}</span>
+                                  <span className="text-green-400">Liq:{stock.score_breakdown.volume}</span>
+                                  <span className="text-yellow-400">Tec:{stock.score_breakdown.technical}</span>
+                                  <span className="text-orange-400">Fun:{stock.score_breakdown.fundamentals}</span>
+                                  <span className="text-pink-400">Sen:{stock.score_breakdown.sentiment}</span>
                                 </div>
                               </div>
                             )}
