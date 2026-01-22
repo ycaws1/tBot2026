@@ -96,24 +96,22 @@ export const wsEndpoint = (path: string) => apiConfig.wsEndpoint(path);
 // Export API endpoints as constants (optional, for better organization)
 export const API_ENDPOINTS = {
   // Stocks
-  TOP_STOCKS: (n: number, timeframe: string) => 
+  TOP_STOCKS: (n: number, timeframe: string) =>
     apiEndpoint(`/api/stocks/top/${n}?timeframe=${timeframe}`),
+  TOP_STOCKS_WITH_NEWS: (n: number, timeframe: string) =>
+    apiEndpoint(`/api/stocks/top/${n}/with-news?timeframe=${timeframe}`),
   ANALYZE_STOCKS: () => apiEndpoint('/api/stocks/analyze'),
-  SEARCH_STOCKS: (query: string, limit: number, timeframe: string) => 
+  SEARCH_STOCKS: (query: string, limit: number, timeframe: string) =>
     apiEndpoint(`/api/stocks/search/${query}?limit=${limit}&timeframe=${timeframe}`),
   STOCK_PRICE: (symbol: string) => apiEndpoint(`/api/price/${symbol}`),
   PRICE_HISTORY: (symbol: string, period: string, interval: string = '1d') =>
     apiEndpoint(`/api/history/${symbol}?period=${period}&interval=${interval}`),
   BATCH_PRICES: () => apiEndpoint('/api/stocks/batch-prices'),
-  
-  // Bots
-  START_BOT: () => apiEndpoint('/api/bot/start'),
-  STOP_BOT: (botId: string) => apiEndpoint(`/api/bot/stop/${botId}`),
-  ACTIVE_BOTS: () => apiEndpoint('/api/bots/active'),
-  
-  // Portfolio
-  PORTFOLIO: (botId: string) => apiEndpoint(`/api/portfolio/${botId}`),
-  
+
+  // News
+  STOCK_NEWS: (symbol: string, limit: number = 5) =>
+    apiEndpoint(`/api/news/${symbol}?limit=${limit}`),
+
   // WebSocket
   WS_PRICES: () => wsEndpoint('/ws/prices'),
 };
