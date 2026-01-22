@@ -15,6 +15,7 @@ import uuid
 # DistilRoBERTa financial sentiment analysis
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+import fasttext
 
 # Initialize DistilRoBERTa (lazy loading)
 sentiment_tokenizer = None
@@ -642,6 +643,22 @@ def read_root():
         "active_bots": len([b for b in active_bots.values() if b["active"]])
     }
 
+@app.get("/api/stocks/top/{n}")
+async def get_top_stocks(n: int = 10, timeframe: str = '1d'):
+    if timeframe not in ['1m', '1h', '1d', '1w']:
+        timeframe = '1m'
+    
+    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
+               "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
+    
+    tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:n*2]]
+    results = await asyncio.gather(*tasks)
+    
+    stocks = [stock for stock in results if stock is not None]
+    stocks.sort(key=lambda x: x.potential_score, reverse=True)
+    
+    return stocks[:n]
+
 @app.post("/api/stocks/analyze")
 async def analyze_custom_stocks(request: SymbolListRequest, timeframe: str = '1d'):
     if timeframe not in ['1m', '1h', '1d', '1w']:
@@ -657,6 +674,111 @@ async def analyze_custom_stocks(request: SymbolListRequest, timeframe: str = '1d
     stocks.sort(key=lambda x: x.potential_score, reverse=True)
     
     return stocks[:limit]
+
+@app.post("/api/bot/start")
+async def start_trading_bot(config: TradingConfig):
+    """Start trading bot with specified configuration"""
+    bot_id = f"bot_{config.symbol}_{uuid.uuid4().hex[:8]}"
+    
+    # Validate symbol
+    try:
+        await get_ticker_info_async(config.symbol)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid symbol: {config.symbol}")
+    
+    # Initialize broker
+    portfolios[bot_id] = SimulatedBroker(config.capital)
+    
+    # Store bot info
+    active_bots[bot_id] = {
+        "config": config,
+        "active": True,
+        "created_at": datetime.now()
+    }
+    
+    # Start the trading task
+    task = asyncio.create_task(trading_bot_task(bot_id))
+    bot_tasks[bot_id] = task
+    
+    print(f"✨ Started new trading bot: {bot_id} for {config.symbol}")
+    
+    return {"bot_id": bot_id, "status": "started", "config": config}
+
+@app.post("/api/bot/stop/{bot_id}")
+async def stop_trading_bot(bot_id: str):
+    """Stop trading bot"""
+    if bot_id in active_bots:
+        active_bots[bot_id]["active"] = False
+        
+        # Cancel the task
+        if bot_id in bot_tasks:
+            bot_tasks[bot_id].cancel()
+            try:
+                await bot_tasks[bot_id]
+            except asyncio.CancelledError:
+                pass
+            del bot_tasks[bot_id]
+        
+        # Remove from active_bots to prevent it from appearing in active list
+        del active_bots[bot_id]
+        
+        print(f"🛑 Stopped trading bot: {bot_id}")
+        return {"bot_id": bot_id, "status": "stopped"}
+    raise HTTPException(status_code=404, detail="Bot not found")
+
+@app.get("/api/bots/active")
+async def get_active_bots():
+    """Get list of all active bots"""
+    bots_list = []
+    for bot_id, bot_info in active_bots.items():
+        bots_list.append({
+            "bot_id": bot_id,
+            "symbol": bot_info["config"].symbol,
+            "strategy": bot_info["config"].strategy,
+            "active": bot_info["active"],
+            "created_at": bot_info["created_at"].isoformat(),
+            "config": {
+                "symbol": bot_info["config"].symbol,
+                "strategy": bot_info["config"].strategy,
+                "capital": bot_info["config"].capital,
+                "entry_threshold": bot_info["config"].entry_threshold,
+                "exit_threshold": bot_info["config"].exit_threshold,
+                "stop_loss": bot_info["config"].stop_loss
+            }
+        })
+    return bots_list
+
+@app.get("/api/portfolio/{bot_id}")
+async def get_portfolio(bot_id: str):
+    """Get portfolio information"""
+    if bot_id not in portfolios:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    broker = portfolios[bot_id]
+    
+    # Get current prices
+    current_prices = {}
+    if broker.positions:
+        symbols = list(broker.positions.keys())
+        tasks = [get_ticker_info_async(symbol) for symbol in symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, dict):
+                current_prices[symbol] = result.get('currentPrice', 0)
+            else:
+                current_prices[symbol] = 0
+    
+    equity = broker.get_portfolio_value(current_prices)
+    profit_loss = broker.get_profit_loss(current_prices)
+    
+    return Portfolio(
+        cash=broker.cash,
+        equity=equity,
+        positions=broker.positions,
+        trades=broker.trades,
+        profit_loss=profit_loss
+    )
 
 @app.get("/api/price/{symbol}")
 async def get_stock_price(symbol: str):
@@ -724,7 +846,7 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- DistilRoBERTa NLP analysis ---
+    # --- VADER NLP analysis ---
     nlp_compound = 0.0
     nlp_sentiment = "neutral"
     positive_prob = 0.33
@@ -732,33 +854,25 @@ def analyze_sentiment(text: str) -> dict:
     neutral_prob = 0.34
 
     try:
-        tokenizer, model = get_sentiment_model()
+        analyzer = get_vader()
+        scores = analyzer.polarity_scores(text)
 
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        positive_prob = scores['pos']
+        negative_prob = scores['neg']
+        neutral_prob = scores['neu']
+        nlp_compound = scores['compound']  # VADER compound score (-1 to +1)
 
-        with torch.no_grad():
-            outputs = model(**inputs)
-            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
-
-        # DistilRoBERTa outputs: [negative, neutral, positive]
-        probs = probabilities[0].tolist()
-        negative_prob = probs[0]
-        neutral_prob = probs[1]
-        positive_prob = probs[2]
-
-        nlp_compound = positive_prob - negative_prob
-
-        max_prob = max(positive_prob, negative_prob, neutral_prob)
-        if max_prob == positive_prob:
+        # Classify based on compound score
+        if nlp_compound >= 0.05:
             nlp_sentiment = "positive"
-        elif max_prob == negative_prob:
+        elif nlp_compound <= -0.05:
             nlp_sentiment = "negative"
         else:
             nlp_sentiment = "neutral"
     except Exception as e:
-        print(f"DistilRoBERTa error: {e}")
+        print(f"VADER error: {e}")
 
-    # --- Combined score (30% keyword, 70% NLP) ---
+    # --- Combined score (30% keyword, 70% VADER) ---
     combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
 
     if combined_score > 0.1:
@@ -877,7 +991,7 @@ async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
         timeframe = '1m'
 
     symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
-               "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
+               "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL"]
 
     # Fetch stock info
     stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:n*2]]

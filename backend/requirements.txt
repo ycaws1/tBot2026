@@ -3,6 +3,7 @@ uvicorn
 pydantic
 passlib
 yfinance
-websocket
 nltk
-fasttext
+websockets
+transformers
+torch

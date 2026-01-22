@@ -96,8 +96,6 @@ export const wsEndpoint = (path: string) => apiConfig.wsEndpoint(path);
 // Export API endpoints as constants (optional, for better organization)
 export const API_ENDPOINTS = {
   // Stocks
-  TOP_STOCKS: (n: number, timeframe: string) =>
-    apiEndpoint(`/api/stocks/top/${n}?timeframe=${timeframe}`),
   TOP_STOCKS_WITH_NEWS: (n: number, timeframe: string) =>
     apiEndpoint(`/api/stocks/top/${n}/with-news?timeframe=${timeframe}`),
   ANALYZE_STOCKS: () => apiEndpoint('/api/stocks/analyze'),

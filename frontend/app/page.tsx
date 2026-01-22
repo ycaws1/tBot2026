@@ -797,9 +797,6 @@ export default function Dashboard() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       52W Range
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Details
-                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -930,30 +927,12 @@ export default function Dashboard() {
                             </div>
                           )}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => togglePriceTrend(stock.symbol)}
-                              className={`text-lg hover:scale-110 transition-transform ${expandedPriceTrend === stock.symbol ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
-                              title="Price Trend"
-                            >
-                              {loadingPriceHistory === stock.symbol ? '⏳' : '📈'}
-                            </button>
-                            <button
-                              onClick={() => toggleExpandStock(stock.symbol)}
-                              className={`text-lg hover:scale-110 transition-transform ${expandedStock === stock.symbol ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
-                              title={`News (${stock.news?.length || 0})`}
-                            >
-                              ℹ️
-                            </button>
-                          </div>
-                        </td>
                       </tr>
                       {expandedPriceTrend === stock.symbol && (() => {
                         const history = getPriceHistoryForStock(stock.symbol);
                         return (
                           <tr>
-                            <td colSpan={11} className="px-6 py-4 bg-purple-50">
+                            <td colSpan={10} className="px-6 py-4 bg-purple-50">
                               <div className="space-y-3">
                                 <h4 className="font-semibold text-gray-800 text-sm">
                                   Price Trend for {stock.symbol} - {getTimeframeParams(timeframe).label}
@@ -1117,7 +1096,7 @@ export default function Dashboard() {
                       })()}
                       {expandedStock === stock.symbol && stock.news && stock.news.length > 0 && (
                         <tr>
-                          <td colSpan={11} className="px-6 py-4 bg-gray-50">
+                          <td colSpan={10} className="px-6 py-4 bg-gray-50">
                             <div className="space-y-3">
                               <h4 className="font-semibold text-gray-800 text-sm">Latest News for {stock.symbol}</h4>
                               {stock.news.map((item, idx) => (
