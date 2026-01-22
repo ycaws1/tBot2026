@@ -49,6 +49,15 @@ executor = ThreadPoolExecutor(max_workers=10)
 fetch_semaphore = asyncio.Semaphore(5)
 
 # Models
+class ScoreBreakdown(BaseModel):
+    momentum: float = 0
+    volatility: float = 0
+    volume: float = 0
+    technical: float = 0
+    fundamentals: float = 0
+    sentiment: float = 0
+    total: float = 0
+
 class StockInfo(BaseModel):
     symbol: str
     price: float
@@ -56,6 +65,21 @@ class StockInfo(BaseModel):
     volume: int
     potential_score: float
     trend: str
+    # Score breakdown for transparency
+    score_breakdown: Optional[ScoreBreakdown] = None
+    # Additional indicators
+    pe_ratio: Optional[float] = None
+    forward_pe: Optional[float] = None
+    eps: Optional[float] = None
+    market_cap: Optional[float] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    beta: Optional[float] = None
+    avg_volume: Optional[int] = None
+    profit_margin: Optional[float] = None
+    revenue_growth: Optional[float] = None
+    price_to_book: Optional[float] = None
 
 class TradingConfig(BaseModel):
     symbol: str
@@ -270,7 +294,199 @@ async def trading_bot_task(bot_id: str):
         print(f"🏁 Trading bot {bot_id} stopped")
 
 # Stock Analysis Functions
+def calculate_day_trading_score(info: dict, hist, timeframe: str = '1d') -> dict:
+    """
+    Comprehensive day trading score using all available indicators.
+    Returns a dict with total score and breakdown by category.
+
+    Scoring weights for day trading:
+    - Momentum & Trend: 25 points (price movement direction)
+    - Volatility: 20 points (opportunity for profit, optimal beta 1.0-2.0)
+    - Volume & Liquidity: 20 points (ability to enter/exit)
+    - Technical Position: 15 points (52-week position, support/resistance)
+    - Fundamentals: 10 points (basic health check)
+    - News Sentiment: 10 points (catalysts)
+    """
+    scores = {
+        'momentum': 0,
+        'volatility': 0,
+        'volume': 0,
+        'technical': 0,
+        'fundamentals': 0,
+        'sentiment': 0,
+        'total': 0
+    }
+
+    try:
+        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+
+        # 1. MOMENTUM & TREND SCORE (max 25 points)
+        if len(hist) >= 5:
+            # Short-term momentum
+            if timeframe == '1m' and len(hist) > 60:
+                recent_hist = hist.iloc[-60:]
+            elif timeframe == '1h' and len(hist) > 24:
+                recent_hist = hist.iloc[-24:]
+            elif timeframe == '1d' and len(hist) > 5:
+                recent_hist = hist.iloc[-5:]
+            else:
+                recent_hist = hist
+
+            price_change = ((recent_hist['Close'].iloc[-1] - recent_hist['Close'].iloc[0]) / recent_hist['Close'].iloc[0]) * 100
+
+            # Positive momentum is good for day trading (following trend)
+            if price_change > 3:
+                scores['momentum'] = 25
+            elif price_change > 1.5:
+                scores['momentum'] = 20
+            elif price_change > 0.5:
+                scores['momentum'] = 15
+            elif price_change > -0.5:
+                scores['momentum'] = 10
+            elif price_change > -1.5:
+                scores['momentum'] = 5
+            else:
+                scores['momentum'] = 0
+
+            # Check for consistent trend (higher highs or lower lows)
+            if len(recent_hist) >= 3:
+                closes = recent_hist['Close'].values
+                if all(closes[i] <= closes[i+1] for i in range(len(closes)-1)):
+                    scores['momentum'] = min(25, scores['momentum'] + 5)  # Consistent uptrend bonus
+
+        # 2. VOLATILITY SCORE (max 20 points)
+        beta = info.get('beta', 1.0)
+        if beta:
+            # Optimal beta for day trading is 1.0-2.0 (enough movement, not too crazy)
+            if 1.0 <= beta <= 2.0:
+                scores['volatility'] = 20
+            elif 0.8 <= beta < 1.0 or 2.0 < beta <= 2.5:
+                scores['volatility'] = 15
+            elif 0.5 <= beta < 0.8 or 2.5 < beta <= 3.0:
+                scores['volatility'] = 10
+            elif beta < 0.5:
+                scores['volatility'] = 5  # Too stable for day trading
+            else:
+                scores['volatility'] = 5  # Too volatile/risky
+
+        # Add intraday volatility from historical data
+        if len(hist) >= 5:
+            daily_range = ((hist['High'] - hist['Low']) / hist['Low']).mean() * 100
+            if daily_range > 3:
+                scores['volatility'] = min(20, scores['volatility'] + 5)
+            elif daily_range > 2:
+                scores['volatility'] = min(20, scores['volatility'] + 3)
+
+        # 3. VOLUME & LIQUIDITY SCORE (max 20 points)
+        volume = info.get('volume', 0)
+        avg_volume = info.get('averageVolume', 0)
+
+        # High volume is essential for day trading
+        if avg_volume:
+            # Volume should be at least 1M for good liquidity
+            if avg_volume > 10000000:
+                scores['volume'] = 15
+            elif avg_volume > 5000000:
+                scores['volume'] = 12
+            elif avg_volume > 1000000:
+                scores['volume'] = 8
+            elif avg_volume > 500000:
+                scores['volume'] = 5
+            else:
+                scores['volume'] = 2
+
+            # Volume surge (current vs average) - indicates interest
+            if volume and avg_volume:
+                volume_ratio = volume / avg_volume
+                if volume_ratio > 2.0:
+                    scores['volume'] = min(20, scores['volume'] + 5)  # Major surge
+                elif volume_ratio > 1.5:
+                    scores['volume'] = min(20, scores['volume'] + 3)
+                elif volume_ratio > 1.2:
+                    scores['volume'] = min(20, scores['volume'] + 2)
+
+        # 4. TECHNICAL POSITION SCORE (max 15 points)
+        fifty_two_week_high = info.get('fiftyTwoWeekHigh')
+        fifty_two_week_low = info.get('fiftyTwoWeekLow')
+
+        if fifty_two_week_high and fifty_two_week_low and current_price:
+            range_size = fifty_two_week_high - fifty_two_week_low
+            if range_size > 0:
+                position = (current_price - fifty_two_week_low) / range_size
+
+                # For day trading, mid-range with momentum is ideal
+                # Near 52-week high with momentum = breakout potential
+                # Near 52-week low = bounce potential but risky
+                if 0.3 <= position <= 0.7:
+                    scores['technical'] = 10  # Good trading range
+                elif position > 0.8:
+                    scores['technical'] = 12 if scores['momentum'] > 15 else 6  # Breakout if momentum
+                elif position < 0.2:
+                    scores['technical'] = 8  # Bounce potential
+                else:
+                    scores['technical'] = 7
+
+                # Check if near support/resistance (recent high/low)
+                if len(hist) >= 5:
+                    recent_high = hist['High'].iloc[-5:].max()
+                    recent_low = hist['Low'].iloc[-5:].min()
+
+                    # Near breakout of recent resistance
+                    if current_price >= recent_high * 0.98:
+                        scores['technical'] = min(15, scores['technical'] + 3)
+                    # Near support bounce
+                    elif current_price <= recent_low * 1.02:
+                        scores['technical'] = min(15, scores['technical'] + 2)
+
+        # 5. FUNDAMENTALS SCORE (max 10 points) - Basic health check
+        pe_ratio = info.get('trailingPE')
+        profit_margin = info.get('profitMargins')
+        revenue_growth = info.get('revenueGrowth')
+
+        fundamental_score = 0
+
+        # PE Ratio - not too high (overvalued), not negative (unprofitable)
+        if pe_ratio:
+            if 5 <= pe_ratio <= 25:
+                fundamental_score += 3
+            elif 25 < pe_ratio <= 40:
+                fundamental_score += 2
+            elif pe_ratio > 0:
+                fundamental_score += 1
+
+        # Profitable company
+        if profit_margin and profit_margin > 0:
+            fundamental_score += 3 if profit_margin > 0.1 else 2 if profit_margin > 0.05 else 1
+
+        # Growing revenue
+        if revenue_growth and revenue_growth > 0:
+            fundamental_score += 4 if revenue_growth > 0.2 else 3 if revenue_growth > 0.1 else 2
+
+        scores['fundamentals'] = min(10, fundamental_score)
+
+        # 6. NEWS SENTIMENT SCORE (max 10 points) - Will be added from news analysis
+        # This is a placeholder - actual sentiment will be added in fetch_stock_info
+        scores['sentiment'] = 5  # Neutral default
+
+        # Calculate total
+        scores['total'] = (
+            scores['momentum'] +
+            scores['volatility'] +
+            scores['volume'] +
+            scores['technical'] +
+            scores['fundamentals'] +
+            scores['sentiment']
+        )
+
+    except Exception as e:
+        print(f"Error calculating day trading score: {e}")
+        scores['total'] = 0
+
+    return scores
+
+
 async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') -> float:
+    """Legacy function - now just returns basic score for backward compatibility"""
     try:
         period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
         interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
@@ -287,11 +503,11 @@ async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') ->
             hist = hist.iloc[-24:]
         elif timeframe == '1d' and len(hist) > 5:
             hist = hist.iloc[-5:]
-        
+
         momentum = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
         volatility = hist['Close'].std() / hist['Close'].mean()
         vol_trend = (hist['Volume'].iloc[-3:].mean() / hist['Volume'].mean()) - 1 if len(hist) >= 3 else 0
-        
+
         score = max(0, min(100, 50 + (momentum * 2) + (vol_trend * 10) - (volatility * 20)))
         return round(score, 2)
     except:
@@ -339,31 +555,69 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[Stock
         period = period_map.get(timeframe, '7d')
         interval = interval_map.get(timeframe, '1d')
         hist = await get_ticker_history_async(symbol, period, interval)
-        
+
         if not hist.empty:
             if timeframe == '1h' and len(hist) > 1:
                 reference_price = hist['Close'].iloc[-2] if len(hist) > 1 else hist['Close'].iloc[0]
             else:
                 reference_price = hist['Close'].iloc[0]
-            
+
             change = ((current_price - reference_price) / reference_price * 100) if reference_price else 0
         else:
             prev_close = info.get('previousClose', current_price)
             change = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
-        
-        # Run score and trend calculations concurrently
-        score, trend = await asyncio.gather(
-            calculate_potential_score_async(symbol, timeframe),
-            get_trend_async(symbol, timeframe)
+
+        # Calculate trend
+        trend = await get_trend_async(symbol, timeframe)
+
+        # Calculate comprehensive day trading score
+        score_data = calculate_day_trading_score(info, hist, timeframe)
+
+        # Extract additional indicators
+        pe_ratio = info.get('trailingPE')
+        forward_pe = info.get('forwardPE')
+        eps = info.get('trailingEps')
+        market_cap = info.get('marketCap')
+        fifty_two_week_high = info.get('fiftyTwoWeekHigh')
+        fifty_two_week_low = info.get('fiftyTwoWeekLow')
+        dividend_yield = info.get('dividendYield')
+        beta = info.get('beta')
+        avg_volume = info.get('averageVolume')
+        profit_margin = info.get('profitMargins')
+        revenue_growth = info.get('revenueGrowth')
+        price_to_book = info.get('priceToBook')
+
+        # Create score breakdown
+        score_breakdown = ScoreBreakdown(
+            momentum=score_data['momentum'],
+            volatility=score_data['volatility'],
+            volume=score_data['volume'],
+            technical=score_data['technical'],
+            fundamentals=score_data['fundamentals'],
+            sentiment=score_data['sentiment'],
+            total=score_data['total']
         )
-        
+
         return StockInfo(
             symbol=symbol,
             price=current_price,
             change=change,
             volume=info.get('volume', 0),
-            potential_score=score,
-            trend=trend
+            potential_score=score_data['total'],
+            trend=trend,
+            score_breakdown=score_breakdown,
+            pe_ratio=pe_ratio,
+            forward_pe=forward_pe,
+            eps=eps,
+            market_cap=market_cap,
+            fifty_two_week_high=fifty_two_week_high,
+            fifty_two_week_low=fifty_two_week_low,
+            dividend_yield=dividend_yield,
+            beta=beta,
+            avg_volume=avg_volume,
+            profit_margin=profit_margin,
+            revenue_growth=revenue_growth,
+            price_to_book=price_to_book
         )
     except Exception as e:
         print(f"Error fetching {symbol} for timeframe {timeframe}: {e}")
@@ -736,11 +990,33 @@ async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
             stock_dict['news'] = news.get('news', [])
             stock_dict['news_sentiment'] = news.get('overall_sentiment', 'neutral')
             stock_dict['news_score'] = news.get('overall_score', 0)
+
+            # Update sentiment score in score_breakdown based on actual news
+            sentiment = news.get('overall_sentiment', 'neutral')
+            news_score_value = news.get('overall_score', 0)
+
+            # Calculate sentiment score (max 10 points)
+            if sentiment == 'positive':
+                sentiment_score = min(10, 7 + abs(news_score_value))
+            elif sentiment == 'negative':
+                sentiment_score = max(0, 3 - abs(news_score_value))
+            else:
+                sentiment_score = 5
+
+            # Update score breakdown
+            if stock_dict.get('score_breakdown'):
+                old_sentiment = stock_dict['score_breakdown'].get('sentiment', 5)
+                stock_dict['score_breakdown']['sentiment'] = sentiment_score
+                stock_dict['score_breakdown']['total'] = stock_dict['score_breakdown']['total'] - old_sentiment + sentiment_score
+                stock_dict['potential_score'] = stock_dict['score_breakdown']['total']
         else:
             stock_dict['news'] = []
             stock_dict['news_sentiment'] = 'neutral'
             stock_dict['news_score'] = 0
         result.append(stock_dict)
+
+    # Re-sort by updated potential score
+    result.sort(key=lambda x: x['potential_score'], reverse=True)
 
     return result
 

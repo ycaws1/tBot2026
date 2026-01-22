@@ -27,6 +27,16 @@ interface NewsItem {
   };
 }
 
+interface ScoreBreakdown {
+  momentum: number;
+  volatility: number;
+  volume: number;
+  technical: number;
+  fundamentals: number;
+  sentiment: number;
+  total: number;
+}
+
 interface Stock {
   symbol: string;
   price: number;
@@ -34,9 +44,23 @@ interface Stock {
   volume: number;
   potential_score: number;
   trend: string;
+  score_breakdown?: ScoreBreakdown;
   news?: NewsItem[];
   news_sentiment?: string;
   news_score?: number;
+  // Additional indicators
+  pe_ratio?: number | null;
+  forward_pe?: number | null;
+  eps?: number | null;
+  market_cap?: number | null;
+  fifty_two_week_high?: number | null;
+  fifty_two_week_low?: number | null;
+  dividend_yield?: number | null;
+  beta?: number | null;
+  avg_volume?: number | null;
+  profit_margin?: number | null;
+  revenue_growth?: number | null;
+  price_to_book?: number | null;
 }
 
 interface PriceHistoryItem {
@@ -49,7 +73,7 @@ interface PriceHistoryItem {
 }
 
 type Timeframe = '1m' | '1h' | '1d' | '1w';
-type SortColumn = 'trend' | 'potential_score' | 'news_sentiment' | null;
+type SortColumn = 'trend' | 'potential_score' | 'news_sentiment' | 'pe_ratio' | 'market_cap' | 'dividend_yield' | null;
 type SortDirection = 'asc' | 'desc';
 
 export default function Dashboard() {
@@ -168,9 +192,11 @@ export default function Dashboard() {
   };
 
   const getScoreColor = (score: number) => {
-    if (score >= 70) return 'bg-green-100 text-green-800';
-    if (score >= 40) return 'bg-yellow-100 text-yellow-800';
-    return 'bg-red-100 text-red-800';
+    if (score >= 75) return 'bg-green-100 text-green-800';  // Excellent day trading potential
+    if (score >= 60) return 'bg-emerald-100 text-emerald-800';  // Good potential
+    if (score >= 45) return 'bg-yellow-100 text-yellow-800';  // Moderate potential
+    if (score >= 30) return 'bg-orange-100 text-orange-800';  // Low potential
+    return 'bg-red-100 text-red-800';  // Poor potential
   };
 
   const getSentimentColor = (sentiment: string) => {
@@ -211,6 +237,36 @@ export default function Dashboard() {
     return date.toLocaleDateString();
   };
 
+  const formatMarketCap = (cap: number | null | undefined) => {
+    if (!cap) return 'N/A';
+    if (cap >= 1e12) return `$${(cap / 1e12).toFixed(2)}T`;
+    if (cap >= 1e9) return `$${(cap / 1e9).toFixed(2)}B`;
+    if (cap >= 1e6) return `$${(cap / 1e6).toFixed(2)}M`;
+    return `$${cap.toLocaleString()}`;
+  };
+
+  const formatPercent = (value: number | null | undefined) => {
+    if (value === null || value === undefined) return 'N/A';
+    return `${(value * 100).toFixed(2)}%`;
+  };
+
+  const formatNumber = (value: number | null | undefined, decimals: number = 2) => {
+    if (value === null || value === undefined) return 'N/A';
+    return value.toFixed(decimals);
+  };
+
+  const getPeColor = (pe: number | null | undefined) => {
+    if (!pe) return 'text-gray-500';
+    if (pe < 15) return 'text-green-600';
+    if (pe < 25) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const get52WeekPosition = (price: number, low: number | null | undefined, high: number | null | undefined) => {
+    if (!low || !high || high === low) return null;
+    return ((price - low) / (high - low)) * 100;
+  };
+
   const handleSort = (column: SortColumn) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -236,6 +292,12 @@ export default function Dashboard() {
         const sentimentOrder = { 'positive': 3, 'neutral': 2, 'negative': 1 };
         comparison = (sentimentOrder[(a.news_sentiment || 'neutral') as keyof typeof sentimentOrder] || 0) -
                      (sentimentOrder[(b.news_sentiment || 'neutral') as keyof typeof sentimentOrder] || 0);
+      } else if (sortColumn === 'pe_ratio') {
+        comparison = (a.pe_ratio || 9999) - (b.pe_ratio || 9999);
+      } else if (sortColumn === 'market_cap') {
+        comparison = (a.market_cap || 0) - (b.market_cap || 0);
+      } else if (sortColumn === 'dividend_yield') {
+        comparison = (a.dividend_yield || 0) - (b.dividend_yield || 0);
       }
 
       return sortDirection === 'asc' ? comparison : -comparison;
@@ -722,11 +784,23 @@ export default function Dashboard() {
                     >
                       Sentiment {getSortIcon('news_sentiment')}
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Price Trend
+                    <th
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('pe_ratio')}
+                    >
+                      P/E {getSortIcon('pe_ratio')}
+                    </th>
+                    <th
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('market_cap')}
+                    >
+                      Mkt Cap {getSortIcon('market_cap')}
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      News
+                      52W Range
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Details
                     </th>
                   </tr>
                 </thead>
@@ -762,9 +836,65 @@ export default function Dashboard() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getScoreColor(stock.potential_score)}`}>
-                            {stock.potential_score.toFixed(1)}
-                          </span>
+                          <div className="group relative">
+                            <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full cursor-help ${getScoreColor(stock.potential_score)}`}>
+                              {stock.potential_score.toFixed(0)}/100
+                            </span>
+                            {/* Score breakdown tooltip */}
+                            {stock.score_breakdown && (
+                              <div className="absolute top-full left-0 mt-2 hidden group-hover:block z-50 w-48 bg-gray-900 text-white text-xs rounded-lg p-3 shadow-lg">
+                                <div className="font-semibold mb-2">Day Trading Score</div>
+                                <div className="space-y-1">
+                                  <div className="flex justify-between">
+                                    <span>Momentum</span>
+                                    <span className="font-medium">{stock.score_breakdown.momentum}/25</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-blue-400 rounded" style={{ width: `${(stock.score_breakdown.momentum / 25) * 100}%` }} />
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Volatility</span>
+                                    <span className="font-medium">{stock.score_breakdown.volatility}/20</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-purple-400 rounded" style={{ width: `${(stock.score_breakdown.volatility / 20) * 100}%` }} />
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Volume</span>
+                                    <span className="font-medium">{stock.score_breakdown.volume}/20</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-green-400 rounded" style={{ width: `${(stock.score_breakdown.volume / 20) * 100}%` }} />
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Technical</span>
+                                    <span className="font-medium">{stock.score_breakdown.technical}/15</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-yellow-400 rounded" style={{ width: `${(stock.score_breakdown.technical / 15) * 100}%` }} />
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Fundamentals</span>
+                                    <span className="font-medium">{stock.score_breakdown.fundamentals}/10</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-orange-400 rounded" style={{ width: `${(stock.score_breakdown.fundamentals / 10) * 100}%` }} />
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Sentiment</span>
+                                    <span className="font-medium">{stock.score_breakdown.sentiment}/10</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-gray-700 rounded">
+                                    <div className="h-full bg-pink-400 rounded" style={{ width: `${(stock.score_breakdown.sentiment / 10) * 100}%` }} />
+                                  </div>
+                                </div>
+                                <div className="mt-2 pt-2 border-t border-gray-700 flex justify-between font-semibold">
+                                  <span>Total</span>
+                                  <span>{stock.score_breakdown.total}/100</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getSentimentColor(stock.news_sentiment || 'neutral')}`}>
@@ -772,27 +902,59 @@ export default function Dashboard() {
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <button
-                            onClick={() => togglePriceTrend(stock.symbol)}
-                            className="text-purple-600 hover:text-purple-800 text-sm font-medium"
-                          >
-                            {loadingPriceHistory === stock.symbol ? '...' : expandedPriceTrend === stock.symbol ? '▼ Hide' : '▶ View'}
-                          </button>
+                          <div className={`text-sm font-medium ${getPeColor(stock.pe_ratio)}`}>
+                            {formatNumber(stock.pe_ratio)}
+                          </div>
+                          {stock.forward_pe && (
+                            <div className="text-xs text-gray-400">
+                              Fwd: {formatNumber(stock.forward_pe)}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <button
-                            onClick={() => toggleExpandStock(stock.symbol)}
-                            className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                          >
-                            {expandedStock === stock.symbol ? '▼ Hide' : '▶ View'} ({stock.news?.length || 0})
-                          </button>
+                          <div className="text-sm font-medium text-gray-900">
+                            {formatMarketCap(stock.market_cap)}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-xs text-gray-500 mb-1">
+                            ${formatNumber(stock.fifty_two_week_low)} - ${formatNumber(stock.fifty_two_week_high)}
+                          </div>
+                          {stock.fifty_two_week_low && stock.fifty_two_week_high && (
+                            <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-blue-500 rounded-full relative"
+                                style={{ width: `${get52WeekPosition(stock.price, stock.fifty_two_week_low, stock.fifty_two_week_high)}%` }}
+                              >
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-blue-700 rounded-full" />
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => togglePriceTrend(stock.symbol)}
+                              className={`text-lg hover:scale-110 transition-transform ${expandedPriceTrend === stock.symbol ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
+                              title="Price Trend"
+                            >
+                              {loadingPriceHistory === stock.symbol ? '⏳' : '📈'}
+                            </button>
+                            <button
+                              onClick={() => toggleExpandStock(stock.symbol)}
+                              className={`text-lg hover:scale-110 transition-transform ${expandedStock === stock.symbol ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
+                              title={`News (${stock.news?.length || 0})`}
+                            >
+                              📰
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {expandedPriceTrend === stock.symbol && (() => {
                         const history = getPriceHistoryForStock(stock.symbol);
                         return (
                           <tr>
-                            <td colSpan={9} className="px-6 py-4 bg-purple-50">
+                            <td colSpan={11} className="px-6 py-4 bg-purple-50">
                               <div className="space-y-3">
                                 <h4 className="font-semibold text-gray-800 text-sm">
                                   Price Trend for {stock.symbol} - {getTimeframeParams(timeframe).label}
@@ -830,6 +992,121 @@ export default function Dashboard() {
                                         </div>
                                       </div>
                                     </div>
+                                    {/* Financial Indicators */}
+                                    <div className="mt-4">
+                                      <h5 className="font-semibold text-gray-700 text-sm mb-2">Financial Indicators</h5>
+                                      <div className="grid grid-cols-6 gap-3 text-sm">
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">EPS</div>
+                                          <div className="font-semibold text-gray-800">
+                                            ${formatNumber(stock.eps)}
+                                          </div>
+                                        </div>
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">Beta</div>
+                                          <div className={`font-semibold ${(stock.beta || 0) > 1 ? 'text-orange-600' : 'text-green-600'}`}>
+                                            {formatNumber(stock.beta)}
+                                          </div>
+                                        </div>
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">Div Yield</div>
+                                          <div className="font-semibold text-blue-600">
+                                            {formatPercent(stock.dividend_yield)}
+                                          </div>
+                                        </div>
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">P/B Ratio</div>
+                                          <div className="font-semibold text-gray-800">
+                                            {formatNumber(stock.price_to_book)}
+                                          </div>
+                                        </div>
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">Profit Margin</div>
+                                          <div className={`font-semibold ${(stock.profit_margin || 0) > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatPercent(stock.profit_margin)}
+                                          </div>
+                                        </div>
+                                        <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                          <div className="text-gray-500 text-xs">Revenue Growth</div>
+                                          <div className={`font-semibold ${(stock.revenue_growth || 0) > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatPercent(stock.revenue_growth)}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {/* Day Trading Score Breakdown */}
+                                    {stock.score_breakdown && (
+                                      <div className="mt-4">
+                                        <h5 className="font-semibold text-gray-700 text-sm mb-2">
+                                          Day Trading Score Breakdown
+                                          <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${getScoreColor(stock.potential_score)}`}>
+                                            {stock.potential_score.toFixed(0)}/100
+                                          </span>
+                                        </h5>
+                                        <div className="grid grid-cols-6 gap-3">
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Momentum</span>
+                                              <span className="text-xs font-semibold text-blue-600">{stock.score_breakdown.momentum}/25</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-blue-500 rounded" style={{ width: `${(stock.score_breakdown.momentum / 25) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">Price direction & strength</div>
+                                          </div>
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Volatility</span>
+                                              <span className="text-xs font-semibold text-purple-600">{stock.score_breakdown.volatility}/20</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-purple-500 rounded" style={{ width: `${(stock.score_breakdown.volatility / 20) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">Price swing potential</div>
+                                          </div>
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Volume</span>
+                                              <span className="text-xs font-semibold text-green-600">{stock.score_breakdown.volume}/20</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-green-500 rounded" style={{ width: `${(stock.score_breakdown.volume / 20) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">Liquidity & interest</div>
+                                          </div>
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Technical</span>
+                                              <span className="text-xs font-semibold text-yellow-600">{stock.score_breakdown.technical}/15</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-yellow-500 rounded" style={{ width: `${(stock.score_breakdown.technical / 15) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">52W position & levels</div>
+                                          </div>
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Fundamentals</span>
+                                              <span className="text-xs font-semibold text-orange-600">{stock.score_breakdown.fundamentals}/10</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-orange-500 rounded" style={{ width: `${(stock.score_breakdown.fundamentals / 10) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">P/E, margins, growth</div>
+                                          </div>
+                                          <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-gray-500 text-xs">Sentiment</span>
+                                              <span className="text-xs font-semibold text-pink-600">{stock.score_breakdown.sentiment}/10</span>
+                                            </div>
+                                            <div className="w-full h-2 bg-gray-200 rounded">
+                                              <div className="h-full bg-pink-500 rounded" style={{ width: `${(stock.score_breakdown.sentiment / 10) * 100}%` }} />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">News sentiment</div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 ) : (
                                   <div className="text-gray-500 text-sm">No price history available</div>
@@ -841,7 +1118,7 @@ export default function Dashboard() {
                       })()}
                       {expandedStock === stock.symbol && stock.news && stock.news.length > 0 && (
                         <tr>
-                          <td colSpan={9} className="px-6 py-4 bg-gray-50">
+                          <td colSpan={11} className="px-6 py-4 bg-gray-50">
                             <div className="space-y-3">
                               <h4 className="font-semibold text-gray-800 text-sm">Latest News for {stock.symbol}</h4>
                               {stock.news.map((item, idx) => (
