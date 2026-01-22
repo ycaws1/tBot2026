@@ -12,18 +12,25 @@ import functools
 import os
 import uuid
 
-# NLP sentiment analysis
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
+# DistilRoBERTa financial sentiment analysis (lighter than FinBERT)
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
 
-# Download VADER lexicon (only needed once)
-try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except LookupError:
-    nltk.download('vader_lexicon', quiet=True)
+# Initialize DistilRoBERTa (lazy loading to speed up startup)
+sentiment_tokenizer = None
+sentiment_model = None
 
-# Initialize VADER
-vader_analyzer = SentimentIntensityAnalyzer()
+def get_sentiment_model():
+    """Lazy load DistilRoBERTa financial sentiment model"""
+    global sentiment_tokenizer, sentiment_model
+    if sentiment_tokenizer is None:
+        print("Loading DistilRoBERTa financial sentiment model...")
+        model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
+        sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        sentiment_model.eval()  # Set to evaluation mode
+        print("DistilRoBERTa model loaded!")
+    return sentiment_tokenizer, sentiment_model
 
 # Import strategies
 from strategies import StrategyFactory
@@ -806,7 +813,7 @@ async def get_price_history(symbol: str, period: str = "1mo", interval: str = "1
 
 # Sentiment Analysis
 def analyze_sentiment(text: str) -> dict:
-    """Combined keyword-based and VADER NLP sentiment analysis"""
+    """Combined keyword-based and FinBERT NLP sentiment analysis"""
     text_lower = text.lower()
 
     # --- Keyword-based analysis ---
@@ -835,22 +842,47 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- VADER NLP analysis ---
-    vader_scores = vader_analyzer.polarity_scores(text)
-    # compound score ranges from -1 (most negative) to +1 (most positive)
-    vader_compound = vader_scores['compound']
+    # --- DistilRoBERTa NLP analysis ---
+    try:
+        tokenizer, model = get_sentiment_model()
 
-    # Classify VADER sentiment
-    if vader_compound >= 0.05:
-        vader_sentiment = "positive"
-    elif vader_compound <= -0.05:
-        vader_sentiment = "negative"
-    else:
-        vader_sentiment = "neutral"
+        # Truncate text to max 512 tokens
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
 
-    # --- Combined score (weighted average: 40% keyword, 60% VADER) ---
-    # VADER is more reliable so we weight it higher
-    combined_score = (0.4 * keyword_score) + (0.6 * vader_compound)
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
+
+        # DistilRoBERTa outputs: [negative, neutral, positive]
+        probs = probabilities[0].tolist()
+        negative_prob = probs[0]
+        neutral_prob = probs[1]
+        positive_prob = probs[2]
+
+        # Calculate compound score (-1 to +1)
+        nlp_compound = positive_prob - negative_prob
+
+        # Classify sentiment
+        max_prob = max(positive_prob, negative_prob, neutral_prob)
+        if max_prob == positive_prob:
+            nlp_sentiment = "positive"
+        elif max_prob == negative_prob:
+            nlp_sentiment = "negative"
+        else:
+            nlp_sentiment = "neutral"
+
+    except Exception as e:
+        print(f"DistilRoBERTa error: {e}")
+        # Fallback values
+        nlp_compound = 0.0
+        nlp_sentiment = "neutral"
+        positive_prob = 0.33
+        negative_prob = 0.33
+        neutral_prob = 0.34
+
+    # --- Combined score (weighted average: 30% keyword, 70% NLP) ---
+    # DistilRoBERTa is more reliable for financial text
+    combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
 
     if combined_score > 0.1:
         sentiment = "positive"
@@ -867,11 +899,11 @@ def analyze_sentiment(text: str) -> dict:
             "confidence": round(keyword_confidence, 2)
         },
         "nlp": {
-            "sentiment": vader_sentiment,
-            "score": round(vader_compound, 2),
-            "positive": round(vader_scores['pos'], 2),
-            "negative": round(vader_scores['neg'], 2),
-            "neutral": round(vader_scores['neu'], 2)
+            "sentiment": nlp_sentiment,
+            "score": round(nlp_compound, 2),
+            "positive": round(positive_prob, 2),
+            "negative": round(negative_prob, 2),
+            "neutral": round(neutral_prob, 2)
         }
     }
 

@@ -1118,9 +1118,9 @@ export default function Dashboard() {
                                         </span>
                                       </div>
                                     </div>
-                                    {/* NLP VADER sentiment */}
+                                    {/* NLP DistilRoBERTa sentiment */}
                                     <div className="bg-blue-50 rounded p-2">
-                                      <div className="font-medium text-blue-600 mb-1">NLP (VADER)</div>
+                                      <div className="font-medium text-blue-600 mb-1">NLP (DistilRoBERTa)</div>
                                       <div className="flex items-center justify-between">
                                         <span className={`px-1.5 py-0.5 rounded text-xs ${getSentimentColor(item.sentiment.nlp?.sentiment || 'neutral')}`}>
                                           {item.sentiment.nlp?.sentiment ?? 'N/A'}
