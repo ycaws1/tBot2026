@@ -39,6 +39,15 @@ interface Stock {
   news_score?: number;
 }
 
+interface PriceHistoryItem {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 type Timeframe = '1m' | '1h' | '1d' | '1w';
 type SortColumn = 'trend' | 'potential_score' | 'news_sentiment' | null;
 type SortDirection = 'asc' | 'desc';
@@ -54,6 +63,9 @@ export default function Dashboard() {
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
+  const [expandedPriceTrend, setExpandedPriceTrend] = useState<string | null>(null);
+  const [priceHistory, setPriceHistory] = useState<Record<string, PriceHistoryItem[]>>({});
+  const [loadingPriceHistory, setLoadingPriceHistory] = useState<string | null>(null);
   const fetchedRef = useRef(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const clockRef = useRef<NodeJS.Timeout | null>(null);
@@ -119,6 +131,13 @@ export default function Dashboard() {
       }
     };
   }, []);
+
+  // Re-fetch price history when timeframe changes and a price trend is expanded
+  useEffect(() => {
+    if (expandedPriceTrend) {
+      fetchPriceHistory(expandedPriceTrend);
+    }
+  }, [timeframe]);
 
   const handleRefresh = () => {
     fetchTopStocks();
@@ -230,6 +249,316 @@ export default function Dashboard() {
 
   const toggleExpandStock = (symbol: string) => {
     setExpandedStock(expandedStock === symbol ? null : symbol);
+  };
+
+  const getTimeframeParams = (tf: Timeframe): { period: string; interval: string; label: string } => {
+    switch (tf) {
+      case '1m': return { period: '1d', interval: '1m', label: 'Last Day (1-min intervals)' };
+      case '1h': return { period: '5d', interval: '1h', label: 'Last 5 Days (Hourly)' };
+      case '1d': return { period: '1mo', interval: '1d', label: 'Last Month (Daily)' };
+      case '1w': return { period: '6mo', interval: '1wk', label: 'Last 6 Months (Weekly)' };
+      default: return { period: '1mo', interval: '1d', label: 'Last Month (Daily)' };
+    }
+  };
+
+  const fetchPriceHistory = async (symbol: string) => {
+    const cacheKey = `${symbol}-${timeframe}`;
+    if (priceHistory[cacheKey]) return;
+
+    setLoadingPriceHistory(symbol);
+    try {
+      const { period, interval } = getTimeframeParams(timeframe);
+      const response = await fetch(API_ENDPOINTS.PRICE_HISTORY(symbol, period, interval));
+      if (!response.ok) throw new Error('Failed to fetch price history');
+      const data = await response.json();
+      setPriceHistory(prev => ({ ...prev, [cacheKey]: data }));
+    } catch (err) {
+      console.error('Failed to fetch price history:', err);
+    } finally {
+      setLoadingPriceHistory(null);
+    }
+  };
+
+  const togglePriceTrend = async (symbol: string) => {
+    if (expandedPriceTrend === symbol) {
+      setExpandedPriceTrend(null);
+    } else {
+      setExpandedPriceTrend(symbol);
+      await fetchPriceHistory(symbol);
+    }
+  };
+
+  const getPriceHistoryForStock = (symbol: string): PriceHistoryItem[] | undefined => {
+    const cacheKey = `${symbol}-${timeframe}`;
+    return priceHistory[cacheKey];
+  };
+
+  const InteractiveChart = ({ history, tf }: { history: PriceHistoryItem[]; tf: Timeframe }) => {
+    const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+    const svgRef = useRef<SVGSVGElement>(null);
+
+    if (!history || history.length === 0) return null;
+
+    const prices = history.map(h => h.close);
+    const dates = history.map(h => h.date);
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const range = maxPrice - minPrice || 1;
+
+    const margin = { top: 20, right: 60, bottom: 50, left: 70 };
+    const width = 700;
+    const height = 250;
+    const chartWidth = width - margin.left - margin.right;
+    const chartHeight = height - margin.top - margin.bottom;
+
+    const getX = (i: number) => margin.left + (i / (prices.length - 1)) * chartWidth;
+    const getY = (price: number) => margin.top + chartHeight - ((price - minPrice) / range) * chartHeight;
+
+    const points = prices.map((price, i) => `${getX(i)},${getY(price)}`).join(' ');
+
+    const isUp = prices[prices.length - 1] >= prices[0];
+    const color = isUp ? '#16a34a' : '#dc2626';
+
+    const formatAxisDate = (dateStr: string) => {
+      const date = new Date(dateStr);
+      if (tf === '1m' || tf === '1h') {
+        return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+      }
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    };
+
+    const formatTooltipDate = (dateStr: string) => {
+      const date = new Date(dateStr);
+      if (tf === '1m' || tf === '1h') {
+        return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+      }
+      return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+    };
+
+    const yTicks = 5;
+    const xTicks = Math.min(5, dates.length);
+
+    const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+      if (!svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+
+      if (x < margin.left || x > width - margin.right) {
+        setHoveredIndex(null);
+        return;
+      }
+
+      const ratio = (x - margin.left) / chartWidth;
+      const index = Math.round(ratio * (prices.length - 1));
+      setHoveredIndex(Math.max(0, Math.min(prices.length - 1, index)));
+    };
+
+    const handleMouseLeave = () => setHoveredIndex(null);
+
+    return (
+      <div className="relative">
+        <svg
+          ref={svgRef}
+          width={width}
+          height={height}
+          className="overflow-visible cursor-crosshair"
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+        >
+          {/* Background */}
+          <rect
+            x={margin.left}
+            y={margin.top}
+            width={chartWidth}
+            height={chartHeight}
+            fill="#fafafa"
+          />
+
+          {/* Y-axis */}
+          <line
+            x1={margin.left}
+            y1={margin.top}
+            x2={margin.left}
+            y2={margin.top + chartHeight}
+            stroke="#9ca3af"
+            strokeWidth="1"
+          />
+          {/* X-axis */}
+          <line
+            x1={margin.left}
+            y1={margin.top + chartHeight}
+            x2={margin.left + chartWidth}
+            y2={margin.top + chartHeight}
+            stroke="#9ca3af"
+            strokeWidth="1"
+          />
+
+          {/* Y-axis labels (Price) */}
+          {Array.from({ length: yTicks + 1 }).map((_, i) => {
+            const price = minPrice + (range * i) / yTicks;
+            const y = margin.top + chartHeight - (i / yTicks) * chartHeight;
+            return (
+              <g key={`y-${i}`}>
+                <line
+                  x1={margin.left - 5}
+                  y1={y}
+                  x2={margin.left}
+                  y2={y}
+                  stroke="#9ca3af"
+                  strokeWidth="1"
+                />
+                <text
+                  x={margin.left - 8}
+                  y={y + 4}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="#6b7280"
+                >
+                  ${price.toFixed(2)}
+                </text>
+                <line
+                  x1={margin.left}
+                  y1={y}
+                  x2={margin.left + chartWidth}
+                  y2={y}
+                  stroke="#e5e7eb"
+                  strokeWidth="1"
+                  strokeDasharray="4,4"
+                />
+              </g>
+            );
+          })}
+
+          {/* X-axis labels (Date/Time) */}
+          {Array.from({ length: xTicks }).map((_, i) => {
+            const idx = Math.floor((i / (xTicks - 1)) * (dates.length - 1));
+            const x = getX(idx);
+            return (
+              <g key={`x-${i}`}>
+                <line
+                  x1={x}
+                  y1={margin.top + chartHeight}
+                  x2={x}
+                  y2={margin.top + chartHeight + 5}
+                  stroke="#9ca3af"
+                  strokeWidth="1"
+                />
+                <text
+                  x={x}
+                  y={margin.top + chartHeight + 20}
+                  textAnchor="middle"
+                  fontSize="9"
+                  fill="#6b7280"
+                >
+                  {formatAxisDate(dates[idx])}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Axis labels */}
+          <text
+            x={margin.left - 50}
+            y={margin.top + chartHeight / 2}
+            textAnchor="middle"
+            fontSize="11"
+            fill="#374151"
+            transform={`rotate(-90, ${margin.left - 50}, ${margin.top + chartHeight / 2})`}
+          >
+            Price ($)
+          </text>
+          <text
+            x={margin.left + chartWidth / 2}
+            y={height - 8}
+            textAnchor="middle"
+            fontSize="11"
+            fill="#374151"
+          >
+            {tf === '1m' || tf === '1h' ? 'Date / Time' : 'Date'}
+          </text>
+
+          {/* Gradient fill under line */}
+          <defs>
+            <linearGradient id={`gradient-${isUp ? 'up' : 'down'}`} x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.05" />
+            </linearGradient>
+          </defs>
+          <polygon
+            fill={`url(#gradient-${isUp ? 'up' : 'down'})`}
+            points={`${margin.left},${margin.top + chartHeight} ${points} ${margin.left + chartWidth},${margin.top + chartHeight}`}
+          />
+
+          {/* Price line */}
+          <polyline
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+            points={points}
+          />
+
+          {/* Data points on hover area */}
+          {prices.map((price, i) => (
+            <circle
+              key={i}
+              cx={getX(i)}
+              cy={getY(price)}
+              r={hoveredIndex === i ? 6 : 3}
+              fill={hoveredIndex === i ? color : 'transparent'}
+              stroke={hoveredIndex === i ? 'white' : 'transparent'}
+              strokeWidth="2"
+              className="transition-all duration-100"
+            />
+          ))}
+
+          {/* Crosshair */}
+          {hoveredIndex !== null && (
+            <>
+              <line
+                x1={getX(hoveredIndex)}
+                y1={margin.top}
+                x2={getX(hoveredIndex)}
+                y2={margin.top + chartHeight}
+                stroke="#9ca3af"
+                strokeWidth="1"
+                strokeDasharray="4,4"
+              />
+              <line
+                x1={margin.left}
+                y1={getY(prices[hoveredIndex])}
+                x2={margin.left + chartWidth}
+                y2={getY(prices[hoveredIndex])}
+                stroke="#9ca3af"
+                strokeWidth="1"
+                strokeDasharray="4,4"
+              />
+            </>
+          )}
+        </svg>
+
+        {/* Tooltip */}
+        {hoveredIndex !== null && (
+          <div
+            className="absolute bg-gray-900 text-white px-3 py-2 rounded-lg shadow-lg text-sm pointer-events-none z-10"
+            style={{
+              left: Math.min(getX(hoveredIndex) + 10, width - 150),
+              top: Math.max(getY(prices[hoveredIndex]) - 60, 0),
+            }}
+          >
+            <div className="font-semibold">${prices[hoveredIndex].toFixed(2)}</div>
+            <div className="text-gray-300 text-xs">{formatTooltipDate(dates[hoveredIndex])}</div>
+            <div className="text-xs mt-1">
+              <span className="text-gray-400">O:</span> ${history[hoveredIndex].open.toFixed(2)}{' '}
+              <span className="text-gray-400">H:</span> ${history[hoveredIndex].high.toFixed(2)}
+            </div>
+            <div className="text-xs">
+              <span className="text-gray-400">L:</span> ${history[hoveredIndex].low.toFixed(2)}{' '}
+              <span className="text-gray-400">C:</span> ${history[hoveredIndex].close.toFixed(2)}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -394,6 +723,9 @@ export default function Dashboard() {
                       Sentiment {getSortIcon('news_sentiment')}
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Price Trend
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       News
                     </th>
                   </tr>
@@ -441,6 +773,14 @@ export default function Dashboard() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <button
+                            onClick={() => togglePriceTrend(stock.symbol)}
+                            className="text-purple-600 hover:text-purple-800 text-sm font-medium"
+                          >
+                            {loadingPriceHistory === stock.symbol ? '...' : expandedPriceTrend === stock.symbol ? '▼ Hide' : '▶ View'}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <button
                             onClick={() => toggleExpandStock(stock.symbol)}
                             className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                           >
@@ -448,9 +788,60 @@ export default function Dashboard() {
                           </button>
                         </td>
                       </tr>
+                      {expandedPriceTrend === stock.symbol && (() => {
+                        const history = getPriceHistoryForStock(stock.symbol);
+                        return (
+                          <tr>
+                            <td colSpan={9} className="px-6 py-4 bg-purple-50">
+                              <div className="space-y-3">
+                                <h4 className="font-semibold text-gray-800 text-sm">
+                                  Price Trend for {stock.symbol} - {getTimeframeParams(timeframe).label}
+                                </h4>
+                                {loadingPriceHistory === stock.symbol ? (
+                                  <div className="text-gray-500 text-sm">Loading price history...</div>
+                                ) : history && history.length > 0 ? (
+                                  <div className="flex flex-col gap-4">
+                                    <div className="bg-white p-4 rounded-lg border border-gray-200">
+                                      <InteractiveChart history={history} tf={timeframe} />
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-4 text-sm">
+                                      <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                        <div className="text-gray-500 text-xs">Period High</div>
+                                        <div className="font-semibold text-green-600">
+                                          ${Math.max(...history.map(h => h.high)).toFixed(2)}
+                                        </div>
+                                      </div>
+                                      <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                        <div className="text-gray-500 text-xs">Period Low</div>
+                                        <div className="font-semibold text-red-600">
+                                          ${Math.min(...history.map(h => h.low)).toFixed(2)}
+                                        </div>
+                                      </div>
+                                      <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                        <div className="text-gray-500 text-xs">Start Price</div>
+                                        <div className="font-semibold text-gray-800">
+                                          ${history[0]?.open.toFixed(2) || 'N/A'}
+                                        </div>
+                                      </div>
+                                      <div className="bg-white p-3 rounded-lg border border-gray-200">
+                                        <div className="text-gray-500 text-xs">Latest Close</div>
+                                        <div className="font-semibold text-gray-800">
+                                          ${history[history.length - 1]?.close.toFixed(2) || 'N/A'}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-gray-500 text-sm">No price history available</div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })()}
                       {expandedStock === stock.symbol && stock.news && stock.news.length > 0 && (
-                        <tr key={`${stock.symbol}-news`}>
-                          <td colSpan={8} className="px-6 py-4 bg-gray-50">
+                        <tr>
+                          <td colSpan={9} className="px-6 py-4 bg-gray-50">
                             <div className="space-y-3">
                               <h4 className="font-semibold text-gray-800 text-sm">Latest News for {stock.symbol}</h4>
                               {stock.news.map((item, idx) => (
