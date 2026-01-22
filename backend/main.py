@@ -24,12 +24,15 @@ def get_sentiment_model():
     """Lazy load DistilRoBERTa financial sentiment model"""
     global sentiment_tokenizer, sentiment_model
     if sentiment_tokenizer is None:
+        print("=" * 50)
         print("Loading DistilRoBERTa financial sentiment model...")
+        print("This should only happen ONCE per server start.")
+        print("=" * 50)
         model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
         sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
         sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
         sentiment_model.eval()  # Set to evaluation mode
-        print("DistilRoBERTa model loaded!")
+        print("DistilRoBERTa model loaded and cached!")
     return sentiment_tokenizer, sentiment_model
 
 # Import strategies

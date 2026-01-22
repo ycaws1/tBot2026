@@ -192,11 +192,9 @@ export default function Dashboard() {
   };
 
   const getScoreColor = (score: number) => {
-    if (score >= 75) return 'bg-green-100 text-green-800';  // Excellent day trading potential
-    if (score >= 60) return 'bg-emerald-100 text-emerald-800';  // Good potential
-    if (score >= 45) return 'bg-yellow-100 text-yellow-800';  // Moderate potential
-    if (score >= 30) return 'bg-orange-100 text-orange-800';  // Low potential
-    return 'bg-red-100 text-red-800';  // Poor potential
+    if (score >= 75) return 'bg-green-100 text-green-800';  // Excellent potential
+    if (score >= 60) return 'bg-yellow-100 text-yellow-800';  // Good potential
+    return 'bg-red-100 text-red-800';  // Low potential
   };
 
   const getSentimentColor = (sentiment: string) => {
@@ -837,26 +835,68 @@ export default function Dashboard() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="group relative">
-                            <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full cursor-help ${getScoreColor(stock.potential_score)}`}>
+                            <span
+                              onClick={() => togglePriceTrend(stock.symbol)}
+                              className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-gray-400 ${getScoreColor(stock.potential_score)}`}
+                            >
                               {stock.potential_score.toFixed(0)}/100
                             </span>
-                            {/* Score breakdown tooltip */}
+                            {/* Score breakdown tooltip with bars */}
                             {stock.score_breakdown && (
-                              <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-[100] bg-gray-900 text-white text-xs rounded-lg p-2 shadow-lg">
-                                <div className="flex gap-2">
-                                  <span className="text-blue-400">Mom:{stock.score_breakdown.momentum}</span>
-                                  <span className="text-purple-400">Vol:{stock.score_breakdown.volatility}</span>
-                                  <span className="text-green-400">Liq:{stock.score_breakdown.volume}</span>
-                                  <span className="text-yellow-400">Tec:{stock.score_breakdown.technical}</span>
-                                  <span className="text-orange-400">Fun:{stock.score_breakdown.fundamentals}</span>
-                                  <span className="text-pink-400">Sen:{stock.score_breakdown.sentiment}</span>
+                              <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden group-hover:block z-[100] bg-gray-900 text-white text-xs rounded-lg p-3 shadow-lg whitespace-nowrap pointer-events-none">
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-blue-400">Mom</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-blue-400 rounded" style={{ width: `${(stock.score_breakdown.momentum / 25) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.momentum}/25</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-purple-400">Vol</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-purple-400 rounded" style={{ width: `${(stock.score_breakdown.volatility / 20) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.volatility}/20</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-green-400">Liq</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-green-400 rounded" style={{ width: `${(stock.score_breakdown.volume / 20) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.volume}/20</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-yellow-400">Tec</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-yellow-400 rounded" style={{ width: `${(stock.score_breakdown.technical / 15) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.technical}/15</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-orange-400">Fun</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-orange-400 rounded" style={{ width: `${(stock.score_breakdown.fundamentals / 10) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.fundamentals}/10</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-12 text-pink-400">Sen</span>
+                                    <div className="w-24 h-2 bg-gray-700 rounded overflow-hidden">
+                                      <div className="h-full bg-pink-400 rounded" style={{ width: `${(stock.score_breakdown.sentiment / 10) * 100}%` }} />
+                                    </div>
+                                    <span className="w-8 text-right">{stock.score_breakdown.sentiment}/10</span>
+                                  </div>
                                 </div>
                               </div>
                             )}
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getSentimentColor(stock.news_sentiment || 'neutral')}`}>
+                          <span
+                            onClick={() => toggleExpandStock(stock.symbol)}
+                            className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-gray-400 ${getSentimentColor(stock.news_sentiment || 'neutral')}`}
+                          >
                             {getSentimentIcon(stock.news_sentiment || 'neutral')} {stock.news_sentiment || 'neutral'}
                           </span>
                         </td>
@@ -904,7 +944,7 @@ export default function Dashboard() {
                               className={`text-lg hover:scale-110 transition-transform ${expandedStock === stock.symbol ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
                               title={`News (${stock.news?.length || 0})`}
                             >
-                              📰
+                              ℹ️
                             </button>
                           </div>
                         </td>
