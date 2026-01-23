@@ -128,7 +128,7 @@ from pywebpush import webpush, WebPushException
 # Generate with: from py_vapid import Vapid; v = Vapid(); v.generate_keys(); print(v.private_key, v.public_key)
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
-VAPID_CLAIMS = {"sub": "mailto:admin@stockbot.local"}
+VAPID_CLAIMS = {"sub": "mailto:admin@t-bot2026.vercel.app"}
 
 # Push subscription storage (in-memory, use database in production)
 push_subscriptions: Dict[str, dict] = {}
