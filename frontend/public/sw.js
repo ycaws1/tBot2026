@@ -35,18 +35,13 @@ self.addEventListener('push', (event) => {
     }
   }
 
+  // iOS-compatible options (no vibrate, actions, or requireInteraction)
   const options = {
     body: data.body,
     icon: data.icon || '/icon-192.png',
     badge: data.badge || '/icon-192.png',
     tag: data.tag || 'stock-alert',
-    data: data.data || {},
-    vibrate: [200, 100, 200],
-    requireInteraction: true,
-    actions: [
-      { action: 'view', title: 'View Stock' },
-      { action: 'dismiss', title: 'Dismiss' }
-    ]
+    data: data.data || {}
   };
 
   event.waitUntil(

@@ -115,15 +115,11 @@ class TTLCache:
             'expired_entries': len(self._cache) - valid
         }
 
-# Cache instances with different TTLs
-ticker_info_cache = TTLCache()  # For current price/info
-ticker_history_cache = TTLCache()  # For historical data
-ticker_news_cache = TTLCache()  # For news data
+# Single unified cache for all ticker data
+ticker_cache = TTLCache()
 
 # Cache TTL settings (in seconds)
-CACHE_TTL_TICKER_INFO = 30  # 30 seconds for price data
-CACHE_TTL_HISTORY = 300  # 5 minutes for historical data
-CACHE_TTL_NEWS = 600  # 10 minutes for news
+CACHE_TTL_TICKER = 30  # 30 seconds for combined ticker data
 
 # Web Push notifications
 from pywebpush import webpush, WebPushException
@@ -214,47 +210,51 @@ async def run_async(func, *args, **kwargs):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
 
-async def get_ticker_info_async(symbol: str, use_cache: bool = True):
-    """Fetch ticker info with caching"""
-    cache_key = f"info:{symbol.upper()}"
+async def get_ticker_all_async(symbol: str, timeframe: str = '1d', use_cache: bool = True):
+    """Fetch all ticker data (info, history, news) in one call with caching"""
+    # Map timeframe to period/interval
+    period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
+    interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
+    period = period_map.get(timeframe, '1mo')
+    interval = interval_map.get(timeframe, '1d')
+
+    cache_key = f"ticker:{symbol.upper()}:{timeframe}"
 
     # Check cache first
     if use_cache:
-        cached = await ticker_info_cache.get(cache_key)
+        cached = await ticker_cache.get(cache_key)
         if cached is not None:
             return cached
 
-    # Fetch from yfinance
+    # Fetch all data from yfinance using single Ticker object
     async with fetch_semaphore:
-        def _get_info():
+        def _get_all():
             ticker = yf.Ticker(symbol)
-            return ticker.info
-        result = await run_async(_get_info)
+            return {
+                'info': ticker.info,
+                'history': ticker.history(period=period, interval=interval),
+                'news': ticker.news
+            }
+        result = await run_async(_get_all)
 
     # Store in cache
-    await ticker_info_cache.set(cache_key, result, CACHE_TTL_TICKER_INFO)
+    await ticker_cache.set(cache_key, result, CACHE_TTL_TICKER)
     return result
 
-async def get_ticker_history_async(symbol: str, period: str = "1mo", interval: str = "1d", use_cache: bool = True):
-    """Fetch ticker history with caching"""
-    cache_key = f"history:{symbol.upper()}:{period}:{interval}"
+async def get_ticker_info_async(symbol: str, timeframe: str = '1d', use_cache: bool = True):
+    """Fetch ticker info (uses combined cache)"""
+    data = await get_ticker_all_async(symbol, timeframe, use_cache)
+    return data['info']
 
-    # Check cache first
-    if use_cache:
-        cached = await ticker_history_cache.get(cache_key)
-        if cached is not None:
-            return cached
+async def get_ticker_history_async(symbol: str, timeframe: str = '1d', use_cache: bool = True):
+    """Fetch ticker history (uses combined cache)"""
+    data = await get_ticker_all_async(symbol, timeframe, use_cache)
+    return data['history']
 
-    # Fetch from yfinance
-    async with fetch_semaphore:
-        def _get_history():
-            ticker = yf.Ticker(symbol)
-            return ticker.history(period=period, interval=interval)
-        result = await run_async(_get_history)
-
-    # Store in cache
-    await ticker_history_cache.set(cache_key, result, CACHE_TTL_HISTORY)
-    return result
+async def get_ticker_news_async(symbol: str, timeframe: str = '1d', use_cache: bool = True):
+    """Fetch ticker news (uses combined cache)"""
+    data = await get_ticker_all_async(symbol, timeframe, use_cache)
+    return data['news']
 
 # Simulated Broker
 class SimulatedBroker:
@@ -360,17 +360,16 @@ async def trading_bot_task(bot_id: str):
     try:
         while active_bots[bot_id]["active"]:
             try:
-                # Fetch current price
-                info = await get_ticker_info_async(symbol)
+                # Fetch all data in one call (uses cache)
+                ticker_data = await get_ticker_all_async(symbol, timeframe='1d')
+                info = ticker_data['info']
+                hist = ticker_data['history']
                 current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                
+
                 if current_price == 0:
                     print(f"⚠️ Could not get valid price for {symbol}")
                     await asyncio.sleep(check_interval)
                     continue
-                
-                # Fetch historical data for strategy
-                hist = await get_ticker_history_async(symbol, period="1mo")
                 
                 if hist.empty:
                     print(f"⚠️ No historical data for {symbol}")
@@ -610,12 +609,7 @@ def calculate_day_trading_score(info: dict, hist, timeframe: str = '1d') -> dict
 async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') -> float:
     """Legacy function - now just returns basic score for backward compatibility"""
     try:
-        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
-        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
-        period = period_map.get(timeframe, '1mo')
-        interval = interval_map.get(timeframe, '1d')
-
-        hist = await get_ticker_history_async(symbol, period, interval)
+        hist = await get_ticker_history_async(symbol, timeframe)
         if len(hist) < 5:
             return 0.0
 
@@ -637,12 +631,7 @@ async def calculate_potential_score_async(symbol: str, timeframe: str = '1d') ->
 
 async def get_trend_async(symbol: str, timeframe: str = '1d') -> str:
     try:
-        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
-        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
-        period = period_map.get(timeframe, '1mo')
-        interval = interval_map.get(timeframe, '1d')
-
-        hist = await get_ticker_history_async(symbol, period, interval)
+        hist = await get_ticker_history_async(symbol, timeframe)
         if len(hist) < 2:
             return "NEUTRAL"
 
@@ -669,14 +658,11 @@ async def get_trend_async(symbol: str, timeframe: str = '1d') -> str:
 
 async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[StockInfo]:
     try:
-        info = await get_ticker_info_async(symbol)
+        # Fetch all data in one call (info + history + news)
+        ticker_data = await get_ticker_all_async(symbol, timeframe)
+        info = ticker_data['info']
+        hist = ticker_data['history']
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-
-        period_map = {'1m': '7d', '1h': '5d', '1d': '1mo', '1w': '3mo'}
-        interval_map = {'1m': '1m', '1h': '1h', '1d': '1d', '1w': '1d'}
-        period = period_map.get(timeframe, '7d')
-        interval = interval_map.get(timeframe, '1d')
-        hist = await get_ticker_history_async(symbol, period, interval)
 
         reference_price = None
         reference_datetime = None
@@ -812,10 +798,10 @@ async def analyze_custom_stocks(request: SymbolListRequest, timeframe: str = '1d
     return stocks[:limit]
 
 @app.get("/api/price/{symbol}")
-async def get_stock_price(symbol: str):
+async def get_stock_price(symbol: str, timeframe: str = '1d'):
     """Get current stock price"""
     try:
-        info = await get_ticker_info_async(symbol)
+        info = await get_ticker_info_async(symbol, timeframe)
         price = info.get('currentPrice', info.get('regularMarketPrice', 0))
         return {"symbol": symbol, "price": price, "timestamp": datetime.now()}
     except Exception as e:
@@ -823,9 +809,14 @@ async def get_stock_price(symbol: str):
 
 @app.get("/api/history/{symbol}")
 async def get_price_history(symbol: str, period: str = "1mo", interval: str = "1d"):
-    """Get historical price data"""
+    """Get historical price data (direct fetch, custom period/interval)"""
     try:
-        hist = await get_ticker_history_async(symbol, period, interval)
+        # Direct fetch for custom period/interval (not using combined cache)
+        async with fetch_semaphore:
+            def _get_history():
+                ticker = yf.Ticker(symbol)
+                return ticker.history(period=period, interval=interval)
+            hist = await run_async(_get_history)
 
         if hist.empty:
             raise HTTPException(status_code=404, detail="No data found")
@@ -944,33 +935,11 @@ def analyze_sentiment(text: str) -> dict:
     }
 
 
-async def get_ticker_news_async(symbol: str, use_cache: bool = True):
-    """Fetch news for a stock using yfinance with caching"""
-    cache_key = f"news:{symbol.upper()}"
-
-    # Check cache first
-    if use_cache:
-        cached = await ticker_news_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-    # Fetch from yfinance
-    async with fetch_semaphore:
-        def _get_news():
-            ticker = yf.Ticker(symbol)
-            return ticker.news
-        result = await run_async(_get_news)
-
-    # Store in cache
-    await ticker_news_cache.set(cache_key, result, CACHE_TTL_NEWS)
-    return result
-
-
 @app.get("/api/news/{symbol}")
-async def get_stock_news(symbol: str, limit: int = 5):
+async def get_stock_news(symbol: str, limit: int = 5, timeframe: str = '1d'):
     """Get latest news for a stock with sentiment analysis"""
     try:
-        news_items = await get_ticker_news_async(symbol)
+        news_items = await get_ticker_news_async(symbol, timeframe)
 
         if not news_items:
             return {"symbol": symbol, "news": [], "overall_sentiment": "neutral"}
@@ -1228,39 +1197,20 @@ async def get_subscriptions():
 async def get_cache_stats():
     """Get cache statistics"""
     return {
-        "ticker_info": ticker_info_cache.stats(),
-        "ticker_history": ticker_history_cache.stats(),
-        "ticker_news": ticker_news_cache.stats(),
-        "ttl_settings": {
-            "ticker_info_seconds": CACHE_TTL_TICKER_INFO,
-            "history_seconds": CACHE_TTL_HISTORY,
-            "news_seconds": CACHE_TTL_NEWS
-        }
+        "ticker_cache": ticker_cache.stats(),
+        "ttl_seconds": CACHE_TTL_TICKER
     }
 
 @app.post("/api/cache/clear")
-async def clear_cache(cache_type: str = "all"):
-    """Clear cache entries. cache_type: 'all', 'info', 'history', or 'news'"""
-    cleared = {}
-    if cache_type in ["all", "info"]:
-        await ticker_info_cache.clear()
-        cleared["ticker_info"] = "cleared"
-    if cache_type in ["all", "history"]:
-        await ticker_history_cache.clear()
-        cleared["ticker_history"] = "cleared"
-    if cache_type in ["all", "news"]:
-        await ticker_news_cache.clear()
-        cleared["ticker_news"] = "cleared"
-    return {"success": True, "cleared": cleared}
+async def clear_cache():
+    """Clear all cache entries"""
+    await ticker_cache.clear()
+    return {"success": True, "message": "Cache cleared"}
 
 @app.post("/api/cache/cleanup")
 async def cleanup_cache():
     """Remove expired cache entries"""
-    removed = {
-        "ticker_info": await ticker_info_cache.cleanup(),
-        "ticker_history": await ticker_history_cache.cleanup(),
-        "ticker_news": await ticker_news_cache.cleanup()
-    }
+    removed = await ticker_cache.cleanup()
     return {"success": True, "expired_removed": removed}
 
 
