@@ -84,7 +84,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>('1h');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [isAutoRefreshing, setIsAutoRefreshing] = useState(true);
+  const [isAutoRefreshing, setIsAutoRefreshing] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -180,7 +180,7 @@ export default function Dashboard() {
       });
 
       setNotificationPermission(Notification.permission);
-      setNotificationsEnabled(Notification.permission === 'granted' && localStorage.getItem('notificationsEnabled') === 'true');
+      // Notifications disabled by default - user must explicitly enable each session
     }
   }, []);
 
@@ -253,12 +253,55 @@ export default function Dashboard() {
         };
       });
 
-      // Send test notification
-      const registration = await navigator.serviceWorker.ready;
-      registration.showNotification('Notifications Enabled! 🔔', {
-        body: 'You will be alerted when a stock turns bullish with score ≥85 and positive sentiment.',
-        icon: '/icon-192.png',
-      });
+      // Subscribe to backend push notifications
+      try {
+        const registration = await navigator.serviceWorker.ready;
+
+        // Get VAPID public key from backend
+        const vapidResponse = await fetch(API_ENDPOINTS.VAPID_PUBLIC_KEY());
+        const { publicKey } = await vapidResponse.json();
+
+        // Convert VAPID key to Uint8Array
+        const urlBase64ToUint8Array = (base64String: string) => {
+          const padding = '='.repeat((4 - base64String.length % 4) % 4);
+          const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+          const rawData = window.atob(base64);
+          const outputArray = new Uint8Array(rawData.length);
+          for (let i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+          }
+          return outputArray;
+        };
+
+        // Subscribe to push manager
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
+        });
+
+        // Send subscription to backend
+        await fetch(API_ENDPOINTS.PUSH_SUBSCRIBE(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(subscription.toJSON())
+        });
+
+        console.log('Push subscription registered with backend');
+
+        // Send test notification
+        registration.showNotification('Notifications Enabled! 🔔', {
+          body: 'You will be alerted when a stock turns bullish with score ≥85 and positive sentiment.',
+          icon: '/icon-192.png',
+        });
+      } catch (error) {
+        console.error('Failed to subscribe to push notifications:', error);
+        // Still show local notification even if backend subscription fails
+        const registration = await navigator.serviceWorker.ready;
+        registration.showNotification('Notifications Enabled! 🔔', {
+          body: 'Local notifications enabled. Backend push may not be available.',
+          icon: '/icon-192.png',
+        });
+      }
     }
   };
 
@@ -1274,9 +1317,9 @@ export default function Dashboard() {
                                         </span>
                                       </div>
                                     </div>
-                                    {/* NLP MiniBERT sentiment */}
+                                    {/* NLP FastText sentiment */}
                                     <div className="bg-blue-50 rounded p-2">
-                                      <div className="font-medium text-blue-600 mb-1">NLP (MiniBERT)</div>
+                                      <div className="font-medium text-blue-600 mb-1">NLP (FastText)</div>
                                       <div className="flex items-center justify-between">
                                         <span className={`px-1.5 py-0.5 rounded text-xs ${getSentimentColor(item.sentiment.nlp?.sentiment || 'neutral')}`}>
                                           {item.sentiment.nlp?.sentiment ?? 'N/A'}

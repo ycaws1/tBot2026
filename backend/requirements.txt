@@ -5,7 +5,6 @@ passlib
 yfinance
 nltk
 websockets
-transformers
-torch
+fasttext-wheel
 pywebpush
 python-dotenv
