@@ -96,6 +96,11 @@ export default function Dashboard() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const clockRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Notification states
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  const previousStocksRef = useRef<Record<string, { trend: string; score: number; sentiment: string }>>({});
+
   const fetchTopStocks = async () => {
     try {
       setLoading(true);
@@ -164,6 +169,103 @@ export default function Dashboard() {
       fetchPriceHistory(expandedPriceTrend);
     }
   }, [timeframe]);
+
+  // Register service worker and check notification permission
+  useEffect(() => {
+    if ('serviceWorker' in navigator && 'Notification' in window) {
+      navigator.serviceWorker.register('/sw.js').then((registration) => {
+        console.log('Service Worker registered:', registration);
+      }).catch((error) => {
+        console.error('Service Worker registration failed:', error);
+      });
+
+      setNotificationPermission(Notification.permission);
+      setNotificationsEnabled(Notification.permission === 'granted' && localStorage.getItem('notificationsEnabled') === 'true');
+    }
+  }, []);
+
+  // Check for alert conditions when stocks update
+  useEffect(() => {
+    if (!notificationsEnabled || stocks.length === 0) return;
+
+    stocks.forEach((stock) => {
+      const prev = previousStocksRef.current[stock.symbol];
+      const current = {
+        trend: stock.trend,
+        score: stock.potential_score,
+        sentiment: stock.news_sentiment || 'neutral',
+      };
+
+      // Check alert conditions:
+      // 1. Score >= 85
+      // 2. Positive sentiment
+      // 3. Changed from non-BULLISH to BULLISH
+      if (
+        current.score >= 85 &&
+        current.sentiment === 'positive' &&
+        current.trend === 'BULLISH' &&
+        prev &&
+        prev.trend !== 'BULLISH'
+      ) {
+        // Trigger notification
+        sendNotification(stock);
+      }
+
+      // Update previous state
+      previousStocksRef.current[stock.symbol] = current;
+    });
+  }, [stocks, notificationsEnabled]);
+
+  const sendNotification = async (stock: Stock) => {
+    if (Notification.permission === 'granted') {
+      const registration = await navigator.serviceWorker.ready;
+      registration.showNotification('Stock Alert! 🚀', {
+        body: `${stock.symbol} turned BULLISH!\nScore: ${stock.potential_score.toFixed(0)}/100 | Sentiment: Positive\nPrice: $${stock.price.toFixed(2)} (${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%)`,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: `stock-alert-${stock.symbol}`,
+        vibrate: [200, 100, 200],
+        requireInteraction: true,
+        data: { symbol: stock.symbol },
+      } as NotificationOptions);
+    }
+  };
+
+  const enableNotifications = async () => {
+    if (!('Notification' in window)) {
+      alert('This browser does not support notifications');
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+
+    if (permission === 'granted') {
+      setNotificationsEnabled(true);
+      localStorage.setItem('notificationsEnabled', 'true');
+
+      // Initialize previous stocks state
+      stocks.forEach((stock) => {
+        previousStocksRef.current[stock.symbol] = {
+          trend: stock.trend,
+          score: stock.potential_score,
+          sentiment: stock.news_sentiment || 'neutral',
+        };
+      });
+
+      // Send test notification
+      const registration = await navigator.serviceWorker.ready;
+      registration.showNotification('Notifications Enabled! 🔔', {
+        body: 'You will be alerted when a stock turns bullish with score ≥85 and positive sentiment.',
+        icon: '/icon-192.png',
+      });
+    }
+  };
+
+  const disableNotifications = () => {
+    setNotificationsEnabled(false);
+    localStorage.setItem('notificationsEnabled', 'false');
+  };
 
   const handleRefresh = () => {
     fetchTopStocks();
@@ -631,10 +733,25 @@ export default function Dashboard() {
             <h1 className="text-3xl font-bold text-gray-900">
               Stock Discovery & Analysis
             </h1>
-            <nav className="flex gap-4">
+            <nav className="flex gap-4 items-center">
               <a href="/" className="text-blue-600 font-medium">
                 Dashboard
               </a>
+              {/* Notification Bell */}
+              <button
+                onClick={notificationsEnabled ? disableNotifications : enableNotifications}
+                className={`relative p-2 rounded-lg transition ${
+                  notificationsEnabled
+                    ? 'bg-green-100 text-green-600 hover:bg-green-200'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+                title={notificationsEnabled ? 'Notifications ON (click to disable)' : 'Enable notifications'}
+              >
+                <span className="text-xl">{notificationsEnabled ? '🔔' : '🔕'}</span>
+                {notificationsEnabled && (
+                  <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+                )}
+              </button>
               <SettingsButton />
             </nav>
           </div>
@@ -1157,9 +1274,9 @@ export default function Dashboard() {
                                         </span>
                                       </div>
                                     </div>
-                                    {/* NLP DeBERTa sentiment */}
+                                    {/* NLP MiniBERT sentiment */}
                                     <div className="bg-blue-50 rounded p-2">
-                                      <div className="font-medium text-blue-600 mb-1">NLP (DeBERTa)</div>
+                                      <div className="font-medium text-blue-600 mb-1">NLP (MiniBERT)</div>
                                       <div className="flex items-center justify-between">
                                         <span className={`px-1.5 py-0.5 rounded text-xs ${getSentimentColor(item.sentiment.nlp?.sentiment || 'neutral')}`}>
                                           {item.sentiment.nlp?.sentiment ?? 'N/A'}

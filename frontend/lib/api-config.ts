@@ -112,4 +112,10 @@ export const API_ENDPOINTS = {
 
   // WebSocket
   WS_PRICES: () => wsEndpoint('/ws/prices'),
+
+  // Push Notifications
+  VAPID_PUBLIC_KEY: () => apiEndpoint('/api/push/vapid-public-key'),
+  PUSH_SUBSCRIBE: () => apiEndpoint('/api/push/subscribe'),
+  PUSH_UNSUBSCRIBE: () => apiEndpoint('/api/push/unsubscribe'),
+  PUSH_TEST: () => apiEndpoint('/api/push/test'),
 };
