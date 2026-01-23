@@ -12,34 +12,28 @@ import functools
 import os
 import uuid
 
-# FastText sentiment analysis (lightweight)
-import fasttext
-import urllib.request
+# DeBERTa financial sentiment analysis
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
 
-# Initialize FastText (lazy loading)
-fasttext_model = None
+# Initialize DeBERTa (lazy loading)
+sentiment_tokenizer = None
+sentiment_model = None
 
-def get_fasttext_model():
-    """Lazy load FastText sentiment model"""
-    global fasttext_model
-    if fasttext_model is None:
+def get_sentiment_model():
+    """Lazy load DeBERTa financial sentiment model"""
+    global sentiment_tokenizer, sentiment_model
+    if sentiment_tokenizer is None:
         print("=" * 50)
-        print("Loading FastText sentiment model...")
+        print("Loading DeBERTa financial sentiment model...")
         print("This should only happen ONCE per server start.")
         print("=" * 50)
-        try:
-            model_path = os.path.join(os.path.dirname(__file__), "sentiment_model.bin")
-            if not os.path.exists(model_path):
-                # Download pre-trained sentiment model
-                print("Downloading FastText sentiment model...")
-                url = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/amazon_review_polarity.ftz"
-                urllib.request.urlretrieve(url, model_path)
-            fasttext_model = fasttext.load_model(model_path)
-            print("FastText model loaded and cached!")
-        except Exception as e:
-            print(f"FastText load error: {e}")
-            fasttext_model = None
-    return fasttext_model
+        model_name = "mrm8488/deberta-v3-ft-financial-news-sentiment-analysis"
+        sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        sentiment_model.eval()
+        print("DeBERTa model loaded and cached!")
+    return sentiment_tokenizer, sentiment_model
 
 # Import strategies
 from strategies import StrategyFactory
@@ -78,6 +72,8 @@ class StockInfo(BaseModel):
     symbol: str
     price: float
     change: float
+    change_ref_price: Optional[float] = None
+    change_ref_datetime: Optional[str] = None
     volume: int
     potential_score: float
     trend: str
@@ -572,16 +568,55 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[Stock
         interval = interval_map.get(timeframe, '1d')
         hist = await get_ticker_history_async(symbol, period, interval)
 
-        if not hist.empty:
-            if timeframe == '1h' and len(hist) > 1:
-                reference_price = hist['Close'].iloc[-2] if len(hist) > 1 else hist['Close'].iloc[0]
-            else:
-                reference_price = hist['Close'].iloc[0]
+        reference_price = None
+        reference_datetime = None
+
+        if not hist.empty and len(hist) > 1:
+            # Compare to previous trading day same time candle
+            if timeframe in ['1m', '1h']:
+                # For intraday, find same time from previous trading day
+                current_idx = hist.index[-1]
+                current_time = current_idx.time() if hasattr(current_idx, 'time') else None
+
+                if current_time:
+                    # Look for candle from previous trading day at same time
+                    for i in range(len(hist) - 2, -1, -1):
+                        idx = hist.index[i]
+                        if hasattr(idx, 'date') and idx.date() < current_idx.date():
+                            # Found previous day, now find matching time
+                            prev_day = idx.date()
+                            for j in range(i, -1, -1):
+                                check_idx = hist.index[j]
+                                if hasattr(check_idx, 'date') and check_idx.date() == prev_day:
+                                    if hasattr(check_idx, 'time') and check_idx.time() <= current_time:
+                                        reference_price = float(hist['Close'].iloc[j])
+                                        reference_datetime = check_idx.isoformat()
+                                        break
+                            break
+
+            # Fallback: use previous day's close or previous candle
+            if reference_price is None:
+                prev_close = info.get('previousClose')
+                if prev_close:
+                    reference_price = float(prev_close)
+                    reference_datetime = "Previous close"
+                elif len(hist) > 1:
+                    reference_price = float(hist['Close'].iloc[-2])
+                    reference_datetime = hist.index[-2].isoformat() if hasattr(hist.index[-2], 'isoformat') else str(hist.index[-2])
 
             change = ((current_price - reference_price) / reference_price * 100) if reference_price else 0
         else:
-            prev_close = info.get('previousClose', current_price)
+            # Fallback to previousClose from ticker info
+            prev_close = info.get('previousClose')
+            if prev_close:
+                reference_price = float(prev_close)
+                reference_datetime = "Previous close"
             change = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
+
+        # Ultimate fallback
+        if reference_price is None:
+            reference_price = float(current_price)
+            reference_datetime = "Current price (no reference)"
 
         # Calculate trend
         trend = await get_trend_async(symbol, timeframe)
@@ -618,6 +653,8 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[Stock
             symbol=symbol,
             price=current_price,
             change=change,
+            change_ref_price=reference_price,
+            change_ref_datetime=reference_datetime,
             volume=info.get('volume', 0),
             potential_score=score_data['total'],
             trend=trend,
@@ -730,7 +767,7 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- FastText NLP analysis ---
+    # --- DeBERTa NLP analysis ---
     nlp_compound = 0.0
     nlp_sentiment = "neutral"
     positive_prob = 0.33
@@ -738,39 +775,34 @@ def analyze_sentiment(text: str) -> dict:
     neutral_prob = 0.34
 
     try:
-        model = get_fasttext_model()
-        if model is not None:
-            # Clean text for FastText (single line, no newlines)
-            clean_text = ' '.join(text.split())
-            if clean_text:
-                predictions = model.predict(clean_text, k=2)
-                labels, probs = predictions
+        tokenizer, model = get_sentiment_model()
 
-                # Parse FastText output (labels like __label__1 or __label__2)
-                for label, prob in zip(labels, probs):
-                    label_clean = label.replace('__label__', '')
-                    if label_clean == '2':  # positive
-                        positive_prob = prob
-                    elif label_clean == '1':  # negative
-                        negative_prob = prob
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
 
-                neutral_prob = max(0, 1 - positive_prob - negative_prob)
-                nlp_compound = positive_prob - negative_prob
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
 
-                if positive_prob > negative_prob:
-                    nlp_sentiment = "positive"
-                elif negative_prob > positive_prob:
-                    nlp_sentiment = "negative"
-                else:
-                    nlp_sentiment = "neutral"
+        # DeBERTa outputs: [negative, neutral, positive]
+        probs = probabilities[0].tolist()
+        negative_prob = probs[0]
+        neutral_prob = probs[1]
+        positive_prob = probs[2]
+
+        nlp_compound = positive_prob - negative_prob
+
+        max_prob = max(positive_prob, negative_prob, neutral_prob)
+        if max_prob == positive_prob:
+            nlp_sentiment = "positive"
+        elif max_prob == negative_prob:
+            nlp_sentiment = "negative"
+        else:
+            nlp_sentiment = "neutral"
     except Exception as e:
-        print(f"FastText error: {e}")
+        print(f"DeBERTa error: {e}")
 
-    # --- Combined score (30% keyword, 70% FastText) ---
-    if get_fasttext_model() is not None:
-        combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
-    else:
-        combined_score = keyword_score
+    # --- Combined score (30% keyword, 70% NLP) ---
+    combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
 
     if combined_score > 0.1:
         sentiment = "positive"

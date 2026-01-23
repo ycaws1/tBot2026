@@ -41,6 +41,8 @@ interface Stock {
   symbol: string;
   price: number;
   change: number;
+  change_ref_price?: number | null;
+  change_ref_datetime?: string | null;
   volume: number;
   potential_score: number;
   trend: string;
@@ -313,7 +315,7 @@ export default function Dashboard() {
 
   const getTimeframeParams = (tf: Timeframe): { period: string; interval: string; label: string } => {
     switch (tf) {
-      case '1m': return { period: '1d', interval: '1m', label: 'Last Day (1-min intervals)' };
+      case '1m': return { period: '2d', interval: '1m', label: 'Last 2 Days (1-min intervals)' };
       case '1h': return { period: '5d', interval: '1h', label: 'Last 5 Days (Hourly)' };
       case '1d': return { period: '1mo', interval: '1d', label: 'Last Month (Daily)' };
       case '1w': return { period: '6mo', interval: '1wk', label: 'Last 6 Months (Weekly)' };
@@ -814,10 +816,28 @@ export default function Dashboard() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <div className={`text-sm font-medium ${
-                            stock.change >= 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                          <div className="group relative inline-block">
+                            <div className={`text-sm font-medium ${
+                              stock.change >= 0 ? 'text-green-600' : 'text-red-600'
+                            }`}>
+                              {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                            </div>
+                            {/* Change reference tooltip */}
+                            <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 hidden group-hover:flex flex-col items-center z-[100] pointer-events-none">
+                              <div className="bg-gray-900 text-white text-xs rounded-lg p-2 shadow-lg whitespace-nowrap">
+                                <div className="text-gray-300">
+                                  vs ${stock.change_ref_price?.toFixed(2) ?? 'N/A'}
+                                </div>
+                                <div className="text-[10px] text-gray-500">
+                                  {stock.change_ref_datetime === 'Previous close'
+                                    ? 'Previous close'
+                                    : stock.change_ref_datetime
+                                      ? new Date(stock.change_ref_datetime).toLocaleString()
+                                      : 'Previous close'}
+                                </div>
+                              </div>
+                              <div className="w-2 h-2 bg-gray-900 rotate-45 -mt-1"></div>
+                            </div>
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -1137,9 +1157,9 @@ export default function Dashboard() {
                                         </span>
                                       </div>
                                     </div>
-                                    {/* NLP FastText sentiment */}
+                                    {/* NLP DeBERTa sentiment */}
                                     <div className="bg-blue-50 rounded p-2">
-                                      <div className="font-medium text-blue-600 mb-1">NLP (FastText)</div>
+                                      <div className="font-medium text-blue-600 mb-1">NLP (DeBERTa)</div>
                                       <div className="flex items-center justify-between">
                                         <span className={`px-1.5 py-0.5 rounded text-xs ${getSentimentColor(item.sentiment.nlp?.sentiment || 'neutral')}`}>
                                           {item.sentiment.nlp?.sentiment ?? 'N/A'}

@@ -5,4 +5,5 @@ passlib
 yfinance
 nltk
 websockets
-fasttext-wheel
+transformers
+torch
