@@ -62,6 +62,69 @@ app.add_middleware(
 executor = ThreadPoolExecutor(max_workers=10)
 fetch_semaphore = asyncio.Semaphore(5)
 
+# ============== Caching System ==============
+class TTLCache:
+    """Simple TTL-based cache for yfinance data"""
+    def __init__(self):
+        self._cache: Dict[str, dict] = {}
+        self._lock = asyncio.Lock()
+
+    def _is_expired(self, entry: dict) -> bool:
+        return datetime.now() > entry['expires_at']
+
+    async def get(self, key: str):
+        """Get value from cache if not expired"""
+        async with self._lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                if not self._is_expired(entry):
+                    return entry['value']
+                else:
+                    del self._cache[key]
+            return None
+
+    async def set(self, key: str, value, ttl_seconds: int):
+        """Set value in cache with TTL"""
+        async with self._lock:
+            self._cache[key] = {
+                'value': value,
+                'expires_at': datetime.now() + timedelta(seconds=ttl_seconds),
+                'created_at': datetime.now()
+            }
+
+    async def clear(self):
+        """Clear all cache entries"""
+        async with self._lock:
+            self._cache.clear()
+
+    async def cleanup(self):
+        """Remove expired entries"""
+        async with self._lock:
+            expired_keys = [k for k, v in self._cache.items() if self._is_expired(v)]
+            for key in expired_keys:
+                del self._cache[key]
+            return len(expired_keys)
+
+    def stats(self) -> dict:
+        """Get cache statistics"""
+        now = datetime.now()
+        valid = sum(1 for v in self._cache.values() if now <= v['expires_at'])
+        return {
+            'total_entries': len(self._cache),
+            'valid_entries': valid,
+            'expired_entries': len(self._cache) - valid
+        }
+
+# Cache instances with different TTLs
+ticker_info_cache = TTLCache()  # For current price/info
+ticker_history_cache = TTLCache()  # For historical data
+ticker_news_cache = TTLCache()  # For news data
+
+# Cache TTL settings (in seconds)
+CACHE_TTL_TICKER_INFO = 30  # 30 seconds for price data
+CACHE_TTL_HISTORY = 300  # 5 minutes for historical data
+CACHE_TTL_NEWS = 600  # 10 minutes for news
+
 # Web Push notifications
 from pywebpush import webpush, WebPushException
 
@@ -151,19 +214,47 @@ async def run_async(func, *args, **kwargs):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
 
-async def get_ticker_info_async(symbol: str):
+async def get_ticker_info_async(symbol: str, use_cache: bool = True):
+    """Fetch ticker info with caching"""
+    cache_key = f"info:{symbol.upper()}"
+
+    # Check cache first
+    if use_cache:
+        cached = await ticker_info_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Fetch from yfinance
     async with fetch_semaphore:
         def _get_info():
             ticker = yf.Ticker(symbol)
             return ticker.info
-        return await run_async(_get_info)
+        result = await run_async(_get_info)
 
-async def get_ticker_history_async(symbol: str, period: str = "1mo", interval: str = "1d"):
+    # Store in cache
+    await ticker_info_cache.set(cache_key, result, CACHE_TTL_TICKER_INFO)
+    return result
+
+async def get_ticker_history_async(symbol: str, period: str = "1mo", interval: str = "1d", use_cache: bool = True):
+    """Fetch ticker history with caching"""
+    cache_key = f"history:{symbol.upper()}:{period}:{interval}"
+
+    # Check cache first
+    if use_cache:
+        cached = await ticker_history_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Fetch from yfinance
     async with fetch_semaphore:
         def _get_history():
             ticker = yf.Ticker(symbol)
             return ticker.history(period=period, interval=interval)
-        return await run_async(_get_history)
+        result = await run_async(_get_history)
+
+    # Store in cache
+    await ticker_history_cache.set(cache_key, result, CACHE_TTL_HISTORY)
+    return result
 
 # Simulated Broker
 class SimulatedBroker:
@@ -853,13 +944,26 @@ def analyze_sentiment(text: str) -> dict:
     }
 
 
-async def get_ticker_news_async(symbol: str):
-    """Fetch news for a stock using yfinance"""
+async def get_ticker_news_async(symbol: str, use_cache: bool = True):
+    """Fetch news for a stock using yfinance with caching"""
+    cache_key = f"news:{symbol.upper()}"
+
+    # Check cache first
+    if use_cache:
+        cached = await ticker_news_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Fetch from yfinance
     async with fetch_semaphore:
         def _get_news():
             ticker = yf.Ticker(symbol)
             return ticker.news
-        return await run_async(_get_news)
+        result = await run_async(_get_news)
+
+    # Store in cache
+    await ticker_news_cache.set(cache_key, result, CACHE_TTL_NEWS)
+    return result
 
 
 @app.get("/api/news/{symbol}")
@@ -1116,6 +1220,48 @@ async def get_subscriptions():
         "count": len(push_subscriptions),
         "subscription_ids": list(push_subscriptions.keys())
     }
+
+
+# ============== Cache Management Endpoints ==============
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics"""
+    return {
+        "ticker_info": ticker_info_cache.stats(),
+        "ticker_history": ticker_history_cache.stats(),
+        "ticker_news": ticker_news_cache.stats(),
+        "ttl_settings": {
+            "ticker_info_seconds": CACHE_TTL_TICKER_INFO,
+            "history_seconds": CACHE_TTL_HISTORY,
+            "news_seconds": CACHE_TTL_NEWS
+        }
+    }
+
+@app.post("/api/cache/clear")
+async def clear_cache(cache_type: str = "all"):
+    """Clear cache entries. cache_type: 'all', 'info', 'history', or 'news'"""
+    cleared = {}
+    if cache_type in ["all", "info"]:
+        await ticker_info_cache.clear()
+        cleared["ticker_info"] = "cleared"
+    if cache_type in ["all", "history"]:
+        await ticker_history_cache.clear()
+        cleared["ticker_history"] = "cleared"
+    if cache_type in ["all", "news"]:
+        await ticker_news_cache.clear()
+        cleared["ticker_news"] = "cleared"
+    return {"success": True, "cleared": cleared}
+
+@app.post("/api/cache/cleanup")
+async def cleanup_cache():
+    """Remove expired cache entries"""
+    removed = {
+        "ticker_info": await ticker_info_cache.cleanup(),
+        "ticker_history": await ticker_history_cache.cleanup(),
+        "ticker_news": await ticker_news_cache.cleanup()
+    }
+    return {"success": True, "expired_removed": removed}
 
 
 if __name__ == "__main__":
