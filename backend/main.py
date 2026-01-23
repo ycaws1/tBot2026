@@ -12,27 +12,30 @@ import functools
 import os
 import uuid
 
-# DeBERTa financial sentiment analysis
+from dotenv import load_dotenv
+load_dotenv()
+
+# MiniBERT sentiment analysis (small and fast)
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 
-# Initialize DeBERTa (lazy loading)
+# Initialize MiniBERT (lazy loading)
 sentiment_tokenizer = None
 sentiment_model = None
 
 def get_sentiment_model():
-    """Lazy load DeBERTa financial sentiment model"""
+    """Lazy load MiniBERT sentiment model"""
     global sentiment_tokenizer, sentiment_model
     if sentiment_tokenizer is None:
         print("=" * 50)
-        print("Loading DeBERTa financial sentiment model...")
+        print("Loading MiniBERT sentiment model...")
         print("This should only happen ONCE per server start.")
         print("=" * 50)
-        model_name = "mrm8488/deberta-v3-ft-financial-news-sentiment-analysis"
+        model_name = "boltuix/bert-mini"
         sentiment_tokenizer = AutoTokenizer.from_pretrained(model_name)
         sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
         sentiment_model.eval()
-        print("DeBERTa model loaded and cached!")
+        print("MiniBERT model loaded and cached!")
     return sentiment_tokenizer, sentiment_model
 
 # Import strategies
@@ -57,6 +60,21 @@ app.add_middleware(
 # Thread pool for async yfinance operations
 executor = ThreadPoolExecutor(max_workers=10)
 fetch_semaphore = asyncio.Semaphore(5)
+
+# Web Push notifications
+from pywebpush import webpush, WebPushException
+
+# VAPID keys for push notifications (generate once and store securely in production)
+# Generate with: from py_vapid import Vapid; v = Vapid(); v.generate_keys(); print(v.private_key, v.public_key)
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_CLAIMS = {"sub": "mailto:admin@stockbot.local"}
+
+# Push subscription storage (in-memory, use database in production)
+push_subscriptions: Dict[str, dict] = {}
+
+# Previous stock states for alert detection
+previous_stock_states: Dict[str, dict] = {}
 
 # Models
 class ScoreBreakdown(BaseModel):
@@ -767,7 +785,7 @@ def analyze_sentiment(text: str) -> dict:
         keyword_score = (positive_count - negative_count) / total
         keyword_confidence = min(total / 5, 1.0)
 
-    # --- DeBERTa NLP analysis ---
+    # --- MiniBERT NLP analysis ---
     nlp_compound = 0.0
     nlp_sentiment = "neutral"
     positive_prob = 0.33
@@ -783,23 +801,24 @@ def analyze_sentiment(text: str) -> dict:
             outputs = model(**inputs)
             probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
 
-        # DeBERTa outputs: [negative, neutral, positive]
+        # MiniBERT SST-2 outputs: [negative, positive]
         probs = probabilities[0].tolist()
         negative_prob = probs[0]
-        neutral_prob = probs[1]
-        positive_prob = probs[2]
+        positive_prob = probs[1]
+        # Infer neutral from balance between pos/neg
+        neutral_prob = 1.0 - abs(positive_prob - negative_prob)
 
         nlp_compound = positive_prob - negative_prob
 
-        max_prob = max(positive_prob, negative_prob, neutral_prob)
-        if max_prob == positive_prob:
+        # Classify with threshold for neutral
+        if nlp_compound > 0.2:
             nlp_sentiment = "positive"
-        elif max_prob == negative_prob:
+        elif nlp_compound < -0.2:
             nlp_sentiment = "negative"
         else:
             nlp_sentiment = "neutral"
     except Exception as e:
-        print(f"DeBERTa error: {e}")
+        print(f"MiniBERT error: {e}")
 
     # --- Combined score (30% keyword, 70% NLP) ---
     combined_score = (0.3 * keyword_score) + (0.7 * nlp_compound)
@@ -971,6 +990,118 @@ async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
     result.sort(key=lambda x: x['potential_score'], reverse=True)
 
     return result
+
+
+# ============== Push Notification Endpoints ==============
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict
+
+@app.get("/api/push/vapid-public-key")
+async def get_vapid_public_key():
+    """Get VAPID public key for push subscription"""
+    if not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=500, detail="VAPID keys not configured")
+    return {"publicKey": VAPID_PUBLIC_KEY}
+
+@app.post("/api/push/subscribe")
+async def subscribe_push(subscription: PushSubscription):
+    """Subscribe to push notifications"""
+    subscription_id = subscription.endpoint.split("/")[-1][:16]
+    push_subscriptions[subscription_id] = subscription.dict()
+    print(f"📱 Push subscription added: {subscription_id}")
+    return {"success": True, "id": subscription_id}
+
+@app.post("/api/push/unsubscribe")
+async def unsubscribe_push(subscription: PushSubscription):
+    """Unsubscribe from push notifications"""
+    subscription_id = subscription.endpoint.split("/")[-1][:16]
+    if subscription_id in push_subscriptions:
+        del push_subscriptions[subscription_id]
+        print(f"📱 Push subscription removed: {subscription_id}")
+    return {"success": True}
+
+async def send_push_notification(subscription: dict, title: str, body: str, data: dict = None):
+    """Send push notification to a subscriber"""
+    if not VAPID_PRIVATE_KEY:
+        print("⚠️ VAPID keys not configured, skipping push notification")
+        return False
+
+    try:
+        payload = json.dumps({
+            "title": title,
+            "body": body,
+            "icon": "/icon-192.png",
+            "data": data or {}
+        })
+
+        webpush(
+            subscription_info=subscription,
+            data=payload,
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims=VAPID_CLAIMS
+        )
+        print(f"📨 Push notification sent: {title}")
+        return True
+    except WebPushException as e:
+        print(f"❌ Push notification failed: {e}")
+        if e.response and e.response.status_code == 410:
+            # Subscription expired, remove it
+            subscription_id = subscription.get('endpoint', '').split("/")[-1][:16]
+            if subscription_id in push_subscriptions:
+                del push_subscriptions[subscription_id]
+        return False
+
+async def check_and_send_alerts(stocks: list):
+    """Check stocks for alert conditions and send push notifications"""
+    global previous_stock_states
+
+    for stock in stocks:
+        symbol = stock.get('symbol')
+        current_state = {
+            'trend': stock.get('trend'),
+            'score': stock.get('potential_score', 0),
+            'sentiment': stock.get('news_sentiment', 'neutral')
+        }
+
+        prev_state = previous_stock_states.get(symbol)
+
+        # Check alert conditions:
+        # 1. Score >= 85
+        # 2. Positive sentiment
+        # 3. Changed from non-BULLISH to BULLISH
+        if (
+            current_state['score'] >= 85 and
+            current_state['sentiment'] == 'positive' and
+            current_state['trend'] == 'BULLISH' and
+            prev_state and
+            prev_state.get('trend') != 'BULLISH'
+        ):
+            # Send push notification to all subscribers
+            title = f"🚀 {symbol} Alert!"
+            body = f"{symbol} turned BULLISH!\nScore: {current_state['score']:.0f}/100\nSentiment: Positive"
+
+            for sub_id, subscription in list(push_subscriptions.items()):
+                await send_push_notification(subscription, title, body, {"symbol": symbol})
+
+        # Update previous state
+        previous_stock_states[symbol] = current_state
+
+@app.post("/api/push/test")
+async def test_push():
+    """Send a test push notification to all subscribers"""
+    count = 0
+    for sub_id, subscription in list(push_subscriptions.items()):
+        success = await send_push_notification(
+            subscription,
+            "Test Notification 🔔",
+            "Push notifications are working!",
+            {"test": True}
+        )
+        if success:
+            count += 1
+    return {"success": True, "sent": count}
 
 
 if __name__ == "__main__":
