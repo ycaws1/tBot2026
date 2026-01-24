@@ -24,7 +24,7 @@ export function ControlPanel({
   onRefresh,
   onViewModeChange,
 }: ControlPanelProps) {
-  const timeframes: Timeframe[] = ['1m', '1h', '1d', '1w'];
+  const timeframes: Timeframe[] = ['1m', '1h', '1d'];
 
   return (
     <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
