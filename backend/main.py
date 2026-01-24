@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import functools
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -42,7 +43,41 @@ def get_sentiment_model():
 # Import strategies
 from strategies import StrategyFactory
 
-app = FastAPI(title="Stock Trading Bot API")
+# Common symbols for cache warming
+COMMON_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
+                  "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
+
+# Background cache warming task reference
+_cache_warming_task = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events"""
+    global _cache_warming_task
+
+    # Startup: warm cache immediately then start periodic refresh
+    print("Starting cache warming...")
+    await warm_cache()
+
+    async def refresh_loop():
+        while True:
+            await asyncio.sleep(115)  # Refresh before 120s TTL expires
+            try:
+                await warm_cache()
+            except Exception as e:
+                print(f"Cache warming error: {e}")
+
+    _cache_warming_task = asyncio.create_task(refresh_loop())
+    print("Cache warming background task started")
+
+    yield
+
+    # Shutdown: cancel the warming task
+    if _cache_warming_task:
+        _cache_warming_task.cancel()
+        print("Cache warming task cancelled")
+
+app = FastAPI(title="Stock Trading Bot API", lifespan=lifespan)
 
 raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 if "," in raw_origins:
@@ -119,7 +154,7 @@ class TTLCache:
 ticker_cache = TTLCache()
 
 # Cache TTL settings (in seconds)
-CACHE_TTL_TICKER = 30  # 30 seconds for combined ticker data
+CACHE_TTL_TICKER = 120  # 2 minutes for combined ticker data (was 30s)
 
 # Web Push notifications
 from pywebpush import webpush, WebPushException
@@ -255,6 +290,14 @@ async def get_ticker_news_async(symbol: str, timeframe: str = '1d', use_cache: b
     """Fetch ticker news (uses combined cache)"""
     data = await get_ticker_all_async(symbol, timeframe, use_cache)
     return data['news']
+
+async def warm_cache():
+    """Pre-warm cache for common symbols to eliminate cold-start latency"""
+    print(f"Warming cache for {len(COMMON_SYMBOLS)} symbols...")
+    tasks = [get_ticker_all_async(symbol, '1d', use_cache=False) for symbol in COMMON_SYMBOLS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    success = sum(1 for r in results if not isinstance(r, Exception))
+    print(f"Cache warmed: {success}/{len(COMMON_SYMBOLS)} symbols loaded")
 
 # Simulated Broker
 class SimulatedBroker:
@@ -1020,8 +1063,8 @@ async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
     symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
                "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
 
-    # Fetch stock info
-    stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:n*2]]
+    # Fetch stock info (reduced from n*2 to n+5 to avoid over-fetching)
+    stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:min(n+5, len(symbols))]]
     stock_results = await asyncio.gather(*stock_tasks)
 
     stocks = [stock for stock in stock_results if stock is not None]
