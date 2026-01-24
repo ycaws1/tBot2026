@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
 
     async def refresh_loop():
         while True:
-            await asyncio.sleep(115)  # Refresh before 120s TTL expires
+            await asyncio.sleep(295)  # Refresh before 300s TTL expires
             try:
                 await warm_cache()
             except Exception as e:
@@ -154,7 +154,7 @@ class TTLCache:
 ticker_cache = TTLCache()
 
 # Cache TTL settings (in seconds)
-CACHE_TTL_TICKER = 120  # 2 minutes for combined ticker data (was 30s)
+CACHE_TTL_TICKER = 300  # 5 minutes for combined ticker data (was 30s, 2minutes)
 
 # Web Push notifications
 from pywebpush import webpush, WebPushException
