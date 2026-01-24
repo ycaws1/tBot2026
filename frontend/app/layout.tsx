@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Stock Discovery Webapp",
-  description: "Identifies high-potential stocks with real-time alerts",
+  description: "Identifies potential stocks with real-time alerts",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

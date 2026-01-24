@@ -30,7 +30,7 @@ export function ControlPanel({
     <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
       <div>
         <h2 className="text-xl sm:text-2xl font-semibold text-gray-800">
-          Top High-Potential Stocks
+          Watchlist Stocks
         </h2>
         <p className="text-sm text-gray-500 mt-1">
           Last updated: {lastUpdateText}

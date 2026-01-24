@@ -1080,7 +1080,7 @@ async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
     # Combine stock info with news
     result = []
     for stock, news in zip(top_stocks, news_results):
-        stock_dict = stock.dict()
+        stock_dict = stock.model_dump()
         if isinstance(news, dict):
             stock_dict['news'] = news.get('news', [])
             stock_dict['news_sentiment'] = news.get('overall_sentiment', 'neutral')
@@ -1133,7 +1133,7 @@ async def get_vapid_public_key():
 async def subscribe_push(subscription: PushSubscription):
     """Subscribe to push notifications"""
     subscription_id = subscription.endpoint.split("/")[-1][:16]
-    push_subscriptions[subscription_id] = subscription.dict()
+    push_subscriptions[subscription_id] = subscription.model_dump()
     print(f"📱 Push subscription added: {subscription_id}")
     return {"success": True, "id": subscription_id}
 
