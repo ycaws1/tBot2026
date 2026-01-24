@@ -34,6 +34,7 @@ export interface ScoreBreakdown {
 
 export interface Stock {
   symbol: string;
+  company_name?: string | null;
   price: number;
   change: number;
   change_ref_price?: number | null;

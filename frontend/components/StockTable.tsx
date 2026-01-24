@@ -335,9 +335,14 @@ export function StockTable({
                     <tr>
                       <td colSpan={10} className="px-6 py-4 bg-purple-50">
                         <div className="space-y-3">
-                          <h4 className="font-semibold text-gray-800 text-sm">
-                            Price Trend for {stock.symbol} - {getTimeframeParams(timeframe).label}
-                          </h4>
+                          <div>
+                            <h4 className="font-semibold text-gray-800 text-sm">
+                              Price Trend for {stock.symbol} - {getTimeframeParams(timeframe).label}
+                            </h4>
+                            {stock.company_name && (
+                              <p className="text-xs text-gray-500">{stock.company_name}</p>
+                            )}
+                          </div>
                           {loadingPriceHistory === stock.symbol ? (
                             <div className="text-gray-500 text-sm">Loading price history...</div>
                           ) : history && history.length > 0 ? (

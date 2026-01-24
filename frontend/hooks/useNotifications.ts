@@ -101,20 +101,8 @@ export function useNotifications(): UseNotificationsReturn {
         });
 
         console.log('Push subscription registered with backend');
-
-        // Send test notification
-        registration.showNotification('Notifications Enabled!', {
-          body: 'You will be alerted when a stock turns bullish with score >= 85 and positive sentiment.',
-          icon: '/icon-192.png',
-        });
       } catch (error) {
         console.error('Failed to subscribe to push notifications:', error);
-        // Still show local notification even if backend subscription fails
-        const registration = await navigator.serviceWorker.ready;
-        registration.showNotification('Notifications Enabled!', {
-          body: 'Local notifications enabled. Backend push may not be available.',
-          icon: '/icon-192.png',
-        });
       }
     }
   }, []);

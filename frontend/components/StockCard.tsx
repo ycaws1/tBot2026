@@ -104,11 +104,16 @@ export function StockCard({
       <div className="p-4">
         {/* Header row: Symbol, Trend */}
         <div className="flex justify-between items-start mb-2">
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-bold text-gray-900">{stock.symbol}</span>
-            <span className={`text-sm font-medium ${getTrendColor(stock.trend)}`}>
-              {getTrendIcon(stock.trend)} {stock.trend}
-            </span>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-bold text-gray-900">{stock.symbol}</span>
+              <span className={`text-sm font-medium ${getTrendColor(stock.trend)}`}>
+                {getTrendIcon(stock.trend)} {stock.trend}
+              </span>
+            </div>
+            {stock.company_name && (
+              <p className="text-xs text-gray-500 mt-0.5">{stock.company_name}</p>
+            )}
           </div>
         </div>
 
@@ -153,9 +158,12 @@ export function StockCard({
       {/* Price Trend Expansion */}
       {isPriceTrendExpanded && (
         <div className="border-t border-gray-200 bg-purple-50 p-4">
-          <h4 className="font-semibold text-gray-800 text-sm mb-3">
+          <h4 className="font-semibold text-gray-800 text-sm mb-1">
             Price Trend - {getTimeframeParams(timeframe).label}
           </h4>
+          {stock.company_name && (
+            <p className="text-xs text-gray-500 mb-3">{stock.company_name}</p>
+          )}
 
           {isLoadingPriceHistory ? (
             <div className="text-gray-500 text-sm py-4 text-center">Loading price history...</div>

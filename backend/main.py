@@ -183,6 +183,7 @@ class ScoreBreakdown(BaseModel):
 
 class StockInfo(BaseModel):
     symbol: str
+    company_name: Optional[str] = None
     price: float
     change: float
     change_ref_price: Optional[float] = None
@@ -790,6 +791,7 @@ async def fetch_stock_info(symbol: str, timeframe: str = '1m') -> Optional[Stock
 
         return StockInfo(
             symbol=symbol,
+            company_name=info.get('longName') or info.get('shortName'),
             price=current_price,
             change=change,
             change_ref_price=reference_price,
