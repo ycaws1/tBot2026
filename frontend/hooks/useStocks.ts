@@ -53,19 +53,10 @@ export function useStocks(): UseStocksReturn {
     }
   }, [timeframe]);
 
-  // Initial fetch
+  // Fetch stocks on mount and when timeframe changes
   useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
     fetchTopStocks();
   }, [fetchTopStocks]);
-
-  // Fetch when timeframe changes
-  useEffect(() => {
-    if (fetchedRef.current) {
-      fetchTopStocks();
-    }
-  }, [timeframe, fetchTopStocks]);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
@@ -119,11 +110,11 @@ export function useStocks(): UseStocksReturn {
       } else if (sortColumn === 'trend') {
         const trendOrder = { 'BULLISH': 3, 'NEUTRAL': 2, 'BEARISH': 1 };
         comparison = (trendOrder[a.trend as keyof typeof trendOrder] || 0) -
-                     (trendOrder[b.trend as keyof typeof trendOrder] || 0);
+          (trendOrder[b.trend as keyof typeof trendOrder] || 0);
       } else if (sortColumn === 'news_sentiment') {
         const sentimentOrder = { 'positive': 3, 'neutral': 2, 'negative': 1 };
         comparison = (sentimentOrder[(a.news_sentiment || 'neutral') as keyof typeof sentimentOrder] || 0) -
-                     (sentimentOrder[(b.news_sentiment || 'neutral') as keyof typeof sentimentOrder] || 0);
+          (sentimentOrder[(b.news_sentiment || 'neutral') as keyof typeof sentimentOrder] || 0);
       } else if (sortColumn === 'pe_ratio') {
         comparison = (a.pe_ratio || 9999) - (b.pe_ratio || 9999);
       } else if (sortColumn === 'market_cap') {
