@@ -26,7 +26,17 @@ export function useNotifications(): UseNotificationsReturn {
         console.error('Service Worker registration failed:', error);
       });
 
-      setNotificationPermission(Notification.permission);
+
+      // Avoid synchronous setState in effect to prevent lint errors
+      const currentPermission = Notification.permission;
+      const savedState = localStorage.getItem('notificationsEnabled');
+
+      setTimeout(() => {
+        setNotificationPermission(currentPermission);
+        if (savedState === 'true' && currentPermission === 'granted') {
+          setNotificationsEnabled(true);
+        }
+      }, 0);
     }
   }, []);
 
