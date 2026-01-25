@@ -55,11 +55,17 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events"""
     global _cache_warming_task
 
-    # Startup: warm cache immediately then start periodic refresh
-    print("Starting cache warming...")
-    await warm_cache()
+    # Startup: Start cache warming in background
+    print("Starting cache warming task...")
 
     async def refresh_loop():
+        # Initial warm
+        try:
+            await warm_cache()
+        except Exception as e:
+            print(f"Initial cache warming error: {e}")
+            
+        # Periodic refresh
         while True:
             await asyncio.sleep(295)  # Refresh before 300s TTL expires
             try:
