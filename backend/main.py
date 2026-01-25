@@ -177,6 +177,10 @@ push_subscriptions: Dict[str, dict] = {}
 # Previous stock states for alert detection
 previous_stock_states: Dict[str, dict] = {}
 
+# Processed cache for top stocks
+_processed_top_stocks: Dict[str, list] = {}
+_last_top_stocks_update: Dict[str, datetime] = {}
+
 # Models
 class ScoreBreakdown(BaseModel):
     momentum: float = 0
@@ -299,12 +303,21 @@ async def get_ticker_news_async(symbol: str, timeframe: str = '1d', use_cache: b
     return data['news']
 
 async def warm_cache():
-    """Pre-warm cache for common symbols to eliminate cold-start latency"""
+    """Pre-warm cache for common symbols and pre-calculate top stocks"""
     print(f"Warming cache for {len(COMMON_SYMBOLS)} symbols...")
-    tasks = [get_ticker_all_async(symbol, '1d', use_cache=False) for symbol in COMMON_SYMBOLS]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    success = sum(1 for r in results if not isinstance(r, Exception))
-    print(f"Cache warmed: {success}/{len(COMMON_SYMBOLS)} symbols loaded")
+    
+    # We warm both 1m and 1d as they are most commonly used
+    for tf in ['1m', '1d']:
+        print(f"Refreshing {tf} cache and analysis...")
+        # 1. Warm raw ticker data cache
+        tasks = [get_ticker_all_async(symbol, tf, use_cache=False) for symbol in COMMON_SYMBOLS]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 2. Pre-calculate top stocks (this updates the processed cache)
+        # We call the logic but ignore the return since it updates the global _processed_top_stocks
+        await get_top_stocks_with_news(n=10, timeframe=tf, force_refresh=True)
+    
+    print(f"Cache warming and pre-calculation complete")
 
 # Simulated Broker
 class SimulatedBroker:
@@ -1063,63 +1076,86 @@ async def get_stock_news(symbol: str, limit: int = 5, timeframe: str = '1d'):
 
 
 @app.get("/api/stocks/top/{n}/with-news")
-async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d'):
-    """Get top stocks with news sentiment"""
+async def get_top_stocks_with_news(n: int = 10, timeframe: str = '1d', force_refresh: bool = False):
+    """Get top stocks with news sentiment, using processed cache if available"""
     if timeframe not in ['1m', '1h', '1d', '1w']:
         timeframe = '1m'
 
-    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
-               "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
+    # Check processed cache for this timeframe
+    if not force_refresh and timeframe in _processed_top_stocks:
+        last_update = _last_top_stocks_update.get(timeframe)
+        if last_update and (datetime.now() - last_update).total_seconds() < 240:
+            cached_result = _processed_top_stocks[timeframe]
+            return cached_result[:n]
 
-    # Fetch stock info (reduced from n*2 to n+5 to avoid over-fetching)
-    stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols[:min(n+5, len(symbols))]]
+    symbols = COMMON_SYMBOLS
+
+    # Fetch stock info for ALL common symbols to have a complete ranked list
+    stock_tasks = [fetch_stock_info(symbol, timeframe) for symbol in symbols]
     stock_results = await asyncio.gather(*stock_tasks)
 
     stocks = [stock for stock in stock_results if stock is not None]
     stocks.sort(key=lambda x: x.potential_score, reverse=True)
-    top_stocks = stocks[:n]
+    
+    # We'll fetch news for the top 15 stocks to keep it responsive but complete
+    news_limit = min(15, len(stocks))
+    top_for_news = stocks[:news_limit]
 
     # Fetch news for top stocks
-    news_tasks = [get_stock_news(stock.symbol, limit=3) for stock in top_stocks]
+    news_tasks = [get_stock_news(stock.symbol, limit=3) for stock in top_for_news]
     news_results = await asyncio.gather(*news_tasks, return_exceptions=True)
 
     # Combine stock info with news
-    result = []
-    for stock, news in zip(top_stocks, news_results):
+    full_result = []
+    for i, stock in enumerate(stocks):
         stock_dict = stock.model_dump()
-        if isinstance(news, dict):
-            stock_dict['news'] = news.get('news', [])
-            stock_dict['news_sentiment'] = news.get('overall_sentiment', 'neutral')
-            stock_dict['news_score'] = news.get('overall_score', 0)
+        
+        # Add news if available (only for the ones we fetched news for)
+        if i < len(news_results):
+            news = news_results[i]
+            if isinstance(news, dict):
+                stock_dict['news'] = news.get('news', [])
+                stock_dict['news_sentiment'] = news.get('overall_sentiment', 'neutral')
+                stock_dict['news_score'] = news.get('overall_score', 0)
 
-            # Update sentiment score in score_breakdown based on actual news
-            sentiment = news.get('overall_sentiment', 'neutral')
-            news_score_value = news.get('overall_score', 0)
-
-            # Calculate sentiment score (max 10 points)
-            if sentiment == 'positive':
-                sentiment_score = min(10, 7 + abs(news_score_value))
-            elif sentiment == 'negative':
-                sentiment_score = max(0, 3 - abs(news_score_value))
-            else:
+                # Update sentiment score in score_breakdown
+                sentiment = news.get('overall_sentiment', 'neutral')
+                news_score_val = news.get('overall_score', 0)
                 sentiment_score = 5
-
-            # Update score breakdown
-            if stock_dict.get('score_breakdown'):
-                old_sentiment = stock_dict['score_breakdown'].get('sentiment', 5)
-                stock_dict['score_breakdown']['sentiment'] = sentiment_score
-                stock_dict['score_breakdown']['total'] = stock_dict['score_breakdown']['total'] - old_sentiment + sentiment_score
-                stock_dict['potential_score'] = stock_dict['score_breakdown']['total']
+                if sentiment == 'positive':
+                    sentiment_score = min(10, 7 + abs(news_score_val))
+                elif sentiment == 'negative':
+                    sentiment_score = max(0, 3 - abs(news_score_val))
+                
+                if stock_dict.get('score_breakdown'):
+                    old_s = stock_dict['score_breakdown'].get('sentiment', 5)
+                    stock_dict['score_breakdown']['sentiment'] = sentiment_score
+                    stock_dict['score_breakdown']['total'] = stock_dict['score_breakdown']['total'] - old_s + sentiment_score
+                    stock_dict['potential_score'] = stock_dict['score_breakdown']['total']
+            else:
+                stock_dict['news'] = []
+                stock_dict['news_sentiment'] = 'neutral'
+                stock_dict['news_score'] = 0
         else:
+            # For stocks beyond the news limit, use defaults
             stock_dict['news'] = []
             stock_dict['news_sentiment'] = 'neutral'
             stock_dict['news_score'] = 0
-        result.append(stock_dict)
+
+        full_result.append(stock_dict)
 
     # Re-sort by updated potential score
-    result.sort(key=lambda x: x['potential_score'], reverse=True)
+    full_result.sort(key=lambda x: x['potential_score'], reverse=True)
 
-    return result
+    # Update processed cache (store full list)
+    _processed_top_stocks[timeframe] = full_result
+    _last_top_stocks_update[timeframe] = datetime.now()
+    
+    # Check for alerts using the full result
+    if force_refresh or len(_processed_top_stocks) == 1:
+        asyncio.create_task(check_and_send_alerts(full_result))
+
+    return full_result[:n]
 
 
 # ============== Push Notification Endpoints ==============
