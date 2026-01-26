@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
             
         # Periodic refresh
         while True:
-            await asyncio.sleep(115)  # Refresh before 120s TTL expires
+            await asyncio.sleep(295)  # Refresh before 300s TTL expires
             try:
                 await warm_cache()
             except Exception as e:
@@ -160,7 +160,7 @@ class TTLCache:
 ticker_cache = TTLCache()
 
 # Cache TTL settings (in seconds)
-CACHE_TTL_TICKER = 120  # 2 minutes for combined ticker data (was 30s, 2minutes)
+CACHE_TTL_TICKER = 300  # 5 minutes for combined ticker data (was 30s, 2minutes)
 
 # Web Push notifications
 from pywebpush import webpush, WebPushException
@@ -307,8 +307,8 @@ async def warm_cache():
     print(f"Warming cache for {len(COMMON_SYMBOLS)} symbols...")
     
     # We warm both 1m and 1d as they are most commonly used
-    for tf in ['1m', '1d']:
-        print(f"Refreshing {tf} cache and analysis...")
+    for tf in ['1m', '1h', '1d']:
+        print(f"{datetime.now()} - Refreshing {tf} cache and analysis...")
         # 1. Warm raw ticker data cache
         tasks = [get_ticker_all_async(symbol, tf, use_cache=False) for symbol in COMMON_SYMBOLS]
         await asyncio.gather(*tasks, return_exceptions=True)
