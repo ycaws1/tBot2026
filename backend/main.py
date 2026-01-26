@@ -44,8 +44,14 @@ def get_sentiment_model():
 from strategies import StrategyFactory
 
 # Common symbols for cache warming
-COMMON_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
-                  "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA"]
+# COMMON_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "AMD", "INTC",
+#                   "JPM", "BAC", "WMT", "V", "MA", "DIS", "PYPL", "ADBE", "CRM", "ORCL", "BABA""]
+RAW_SYMBOLS = os.getenv("COMMON_SYMBOLS", 'AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX, AMD, INTC,JPM, BAC, WMT, V, MA, DIS, PYPL, ADBE, CRM, ORCL, BABA, GC=F')
+if "," in RAW_SYMBOLS:
+    COMMON_SYMBOLS = [SYMBOLS.strip() for SYMBOLS in RAW_SYMBOLS.split(",")]
+else:
+    COMMON_SYMBOLS = [RAW_SYMBOLS]
+print(COMMON_SYMBOLS)
 
 # Background cache warming task reference
 _cache_warming_task = None
